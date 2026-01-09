@@ -9,9 +9,10 @@ __pycache__/
 
 # --- 你的数据文件 (太大了，不要传) ---
 *.h5
-*.npy
+# *.npy
 *.pkl
-*.pth
+# *.pth
+*.txt
 data/
 cache/
 .hapi_cache/
