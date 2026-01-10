@@ -14,6 +14,7 @@ from .run_inference_and_save import (
     process_mega_batch_gpu,
     process_superposition_from_gpu,
     calculate_hapi_benchmark,
+    calculate_hapi_benchmark_new,
     save_to_hdf5,
 )
 
@@ -236,16 +237,23 @@ def NNLBL_main(
     if skip_hapi:
         print("\n⚠️  跳过HAPI吸收截面光谱计算")
     else:
+        # 如果 global_iso_ids 为 None，记录为 'default'，否则将列表转为字符串
+        iso_tag = (
+            "_".join(map(str, sorted(global_iso_ids))) if global_iso_ids else "default"
+        )
         # 缓存键生成：基于分子、范围以及输入数据的特征(避免过长文件名)
         # 使用数据摘要(长度 + 首元素)来区分不同输入
         data_signature = f"L{len(p_data)}_P{p_data[0]:.2f}_T{t_data[0]:.2f}"
-        cache_key = f"{MOLECULE}_{GLOBAL_WN_MIN}_{GLOBAL_WN_MAX}_{data_signature}"
+        cache_key = (
+            f"{MOLECULE}_{GLOBAL_WN_MIN}_{GLOBAL_WN_MAX}_{iso_tag}_{data_signature}"
+        )
         cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:16]
         hapi_cache_path = os.path.join("cache", f"hapi_results_{cache_hash}.pkl")
         os.makedirs("cache", exist_ok=True)
 
         if os.path.exists(hapi_cache_path):
             print(f"\n发现HAPI吸收截面缓存数据: {hapi_cache_path}")
+            print(f">> 缓存标识 (Isotopes): {iso_tag}")
             t_load_start = time.perf_counter()
             with open(hapi_cache_path, "rb") as f:
                 hapi_results = pickle.load(f)
@@ -254,13 +262,14 @@ def NNLBL_main(
             print("\n未找到缓存，开始HAPI计算...")
             t_hapi_start = time.perf_counter()
             hapi_results = Parallel(n_jobs=1)(
-                delayed(calculate_hapi_benchmark)(
+                delayed(calculate_hapi_benchmark_new)(
                     MOLECULE,
                     global_wavenumber_grid,
                     layer["temperature_k"],
                     layer["pressure_pa"],
                     GLOBAL_WN_MIN,
                     GLOBAL_WN_MAX,
+                    global_iso_ids=global_iso_ids,
                 )
                 for layer in tqdm(atmospheric_profile, desc="HAPI计算")
             )

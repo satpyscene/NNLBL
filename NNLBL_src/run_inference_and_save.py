@@ -504,6 +504,62 @@ def calculate_hapi_benchmark(
     return coef
 
 
+def calculate_hapi_benchmark_new(
+    molecule_name,
+    wavenumber_grid,
+    temperature_k,
+    pressure_pa,
+    wavenumber_min,
+    wavenumber_max,
+    global_iso_ids=None,  # 新增参数
+):
+    # 1. 参数预处理
+    pressure_atm = pressure_pa / 101325.0
+    db_path = f"data/{molecule_name}_hapi"
+
+    # 2. 数据库连接与表名构建
+    db_begin(db_path)
+
+    # 为了防止缓存冲突，表名需要包含同位素后缀
+    iso_tag = "_".join(map(str, global_iso_ids)) if global_iso_ids else "1"
+    table_name = f"{molecule_name}_{wavenumber_min}_{wavenumber_max}_{iso_tag}"
+
+    # 3. 数据下载逻辑（适配多同位素）
+    if table_name not in tableList():
+        if global_iso_ids:
+            # 使用全局 ID 下载多同位素数据
+            fetch_by_ids(table_name, global_iso_ids, wavenumber_min, wavenumber_max)
+        else:
+            # 默认兼容逻辑：下载该分子的主同位素
+            MOLECULE_IDS = {
+                "H2O": 1,
+                "CO2": 2,
+                "O3": 3,
+                "N2O": 4,
+                "CO": 5,
+                "CH4": 6,
+                "O2": 7,
+            }
+            molecule_id = MOLECULE_IDS[molecule_name]
+            fetch(table_name, molecule_id, 1, wavenumber_min, wavenumber_max)
+
+    # 4. 调用 HAPI 原生函数计算吸收截面
+    # HAPI 在计算时会自动根据表中的 molec_id 和 local_iso_id 处理各自的 TIPS 配分函数
+    nu, coef = absorptionCoefficient_Voigt(
+        SourceTables=table_name,
+        WavenumberGrid=wavenumber_grid,
+        Environment={"p": pressure_atm, "T": temperature_k},
+        HITRAN_units=True,
+        WavenumberWing=25,
+    )
+
+    # 5. 空结果处理
+    if coef is None or len(coef) == 0:
+        coef = np.zeros_like(wavenumber_grid, dtype=np.float32)
+
+    return coef
+
+
 # ============================================================================
 # 保存HDF5
 # ============================================================================
