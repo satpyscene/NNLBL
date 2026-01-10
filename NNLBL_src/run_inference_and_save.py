@@ -472,36 +472,36 @@ def process_superposition_from_gpu(profiles_gpu, wn_grids_gpu, global_grid, base
 # ============================================================================
 
 
-def calculate_hapi_benchmark(
-    molecule_name,
-    wavenumber_grid,
-    temperature_k,
-    pressure_pa,
-    wavenumber_min,
-    wavenumber_max,
-):
-    MOLECULE_IDS = {"H2O": 1, "CO2": 2, "O3": 3, "N2O": 4, "CO": 5, "CH4": 6, "O2": 7}
-    molecule_id = MOLECULE_IDS[molecule_name]
-    pressure_atm = pressure_pa / 101325.0
+# def calculate_hapi_benchmark(
+#     molecule_name,
+#     wavenumber_grid,
+#     temperature_k,
+#     pressure_pa,
+#     wavenumber_min,
+#     wavenumber_max,
+# ):
+#     MOLECULE_IDS = {"H2O": 1, "CO2": 2, "O3": 3, "N2O": 4, "CO": 5, "CH4": 6, "O2": 7}
+#     molecule_id = MOLECULE_IDS[molecule_name]
+#     pressure_atm = pressure_pa / 101325.0
 
-    db_path = f"data/{molecule_name}_hapi"
-    db_begin(db_path)
-    table_name = f"{molecule_name}_{wavenumber_min}_{wavenumber_max}"
+#     db_path = f"data/{molecule_name}_hapi"
+#     db_begin(db_path)
+#     table_name = f"{molecule_name}_{wavenumber_min}_{wavenumber_max}"
 
-    if table_name not in tableList():
-        fetch(table_name, molecule_id, 1, wavenumber_min, wavenumber_max)
+#     if table_name not in tableList():
+#         fetch(table_name, molecule_id, 1, wavenumber_min, wavenumber_max)
 
-    nu, coef = absorptionCoefficient_Voigt(
-        SourceTables=table_name,
-        WavenumberGrid=wavenumber_grid,
-        Environment={"p": pressure_atm, "T": temperature_k},
-        HITRAN_units=True,
-        WavenumberWing=25,
-    )
+#     nu, coef = absorptionCoefficient_Voigt(
+#         SourceTables=table_name,
+#         WavenumberGrid=wavenumber_grid,
+#         Environment={"p": pressure_atm, "T": temperature_k},
+#         HITRAN_units=True,
+#         WavenumberWing=25,
+#     )
 
-    if coef is None:
-        coef = np.zeros_like(wavenumber_grid)
-    return coef
+#     if coef is None:
+#         coef = np.zeros_like(wavenumber_grid)
+#     return coef
 
 
 def calculate_hapi_benchmark_new(
@@ -822,7 +822,7 @@ if __name__ == "__main__":
             print("\n未找到HAPI缓存，开始计算...")
             t_hapi_start = time.perf_counter()
             hapi_results = Parallel(n_jobs=8)(
-                delayed(calculate_hapi_benchmark)(
+                delayed(calculate_hapi_benchmark_new)(
                     MOLECULE,
                     global_wavenumber_grid,
                     layer["temperature_k"],

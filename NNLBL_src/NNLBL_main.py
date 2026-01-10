@@ -13,7 +13,6 @@ from .run_inference_and_save import (
     load_model,
     process_mega_batch_gpu,
     process_superposition_from_gpu,
-    calculate_hapi_benchmark,
     calculate_hapi_benchmark_new,
     save_to_hdf5,
 )
