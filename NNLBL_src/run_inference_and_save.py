@@ -19,10 +19,12 @@ import matplotlib.pyplot as plt
 from .hapi import (
     db_begin,
     fetch,
+    fetch_by_ids,
     absorptionCoefficient_Voigt,
     calculateProfileParametersVoigt,
     tableList,
     PYTIPS,
+    partitionSum,
 )
 
 # ============================================================================
@@ -132,26 +134,117 @@ def load_model(model_path, input_size, hidden_size, output_size, device, stats):
 # ============================================================================
 
 
+# @memory.cache
+# def get_hapi_physical_params(
+#     molecule_name, wavenumber_min, wavenumber_max, temperature_k, pressure_pa
+# ):
+#     MOLECULE_IDS = {"H2O": 1, "CO2": 2, "O3": 3, "N2O": 4, "CO": 5, "CH4": 6, "O2": 7}
+#     molecule_id = MOLECULE_IDS[molecule_name]
+#     pressure_atm = pressure_pa / 101325.0
+#     db_path = f"data/{molecule_name}_hapi"
+
+#     # --- 新增：检查路径是否存在，不存在则创建 ---
+#     if not os.path.exists(db_path):
+#         os.makedirs(db_path, exist_ok=True)
+#         print(f"已创建HAPI数据库目录: {db_path}")
+#     # ----------------------------------------
+#     db_begin(db_path)
+#     table_name = f"{molecule_name}_{wavenumber_min}_{wavenumber_max}"
+
+#     if table_name not in tableList():
+#         fetch(table_name, molecule_id, 1, wavenumber_min, wavenumber_max)
+
+#     try:
+#         from .hapi import LOCAL_TABLE_CACHE
+
+#         DATA_DICT = LOCAL_TABLE_CACHE[table_name]["data"]
+#         num_total_lines = len(DATA_DICT["nu"])
+#     except (KeyError, TypeError):
+#         return {
+#             k: np.array([], dtype=np.float32)
+#             for k in ["gamma_d", "gamma_l", "S", "nu0", "delta_0"]
+#         }
+
+#     if num_total_lines == 0:
+#         return {
+#             k: np.array([], dtype=np.float32)
+#             for k in ["gamma_d", "gamma_l", "S", "nu0", "delta_0"]
+#         }
+
+#     lines_params = {
+#         k: np.empty(num_total_lines, dtype=np.float32)
+#         for k in ["gamma_d", "gamma_l", "S", "nu0", "delta_0"]
+#     }
+
+#     for i in range(num_total_lines):
+#         trans = {param: DATA_DICT[param][i] for param in DATA_DICT}
+#         trans["T"], trans["p"] = temperature_k, pressure_atm
+#         trans["T_ref"], trans["p_ref"] = 296.0, 1.0
+#         trans["Diluent"] = {"air": 1.0}
+#         trans["SigmaT"] = PYTIPS(trans["molec_id"], trans["local_iso_id"], trans["T"])
+#         trans["SigmaT_ref"] = PYTIPS(
+#             trans["molec_id"], trans["local_iso_id"], trans["T_ref"]
+#         )
+
+#         line_calc_params = calculateProfileParametersVoigt(TRANS=trans)
+
+#         lines_params["gamma_d"][i] = line_calc_params["GammaD"]
+#         lines_params["gamma_l"][i] = line_calc_params["Gamma0"]
+#         lines_params["delta_0"][i] = line_calc_params["Delta0"]
+#         lines_params["nu0"][i] = trans["nu"]
+#         lines_params["S"][i] = line_calc_params["Sw"]
+
+#     return lines_params
+
+
 @memory.cache
-def get_hapi_physical_params(
-    molecule_name, wavenumber_min, wavenumber_max, temperature_k, pressure_pa
+def get_hapi_physical_params_new(
+    molecule_name,
+    wavenumber_min,
+    wavenumber_max,
+    temperature_k,
+    pressure_pa,
+    global_iso_ids=None,  # 接收全局 ID 列表，例如 [1, 2] 代表水汽的 H216O 和 H218O
 ):
-    MOLECULE_IDS = {"H2O": 1, "CO2": 2, "O3": 3, "N2O": 4, "CO": 5, "CH4": 6, "O2": 7}
-    molecule_id = MOLECULE_IDS[molecule_name]
+    # 1. 基础参数准备
     pressure_atm = pressure_pa / 101325.0
     db_path = f"data/{molecule_name}_hapi"
 
-    # --- 新增：检查路径是否存在，不存在则创建 ---
     if not os.path.exists(db_path):
         os.makedirs(db_path, exist_ok=True)
-        print(f"已创建HAPI数据库目录: {db_path}")
-    # ----------------------------------------
+
     db_begin(db_path)
-    table_name = f"{molecule_name}_{wavenumber_min}_{wavenumber_max}"
+
+    # 2. 表名与数据下载
+    # 使用 global_iso_ids 构建唯一表名，防止不同同位素组合冲突
+    iso_tag = "_".join(map(str, global_iso_ids)) if global_iso_ids else "default"
+    table_name = f"{molecule_name}_{wavenumber_min}_{wavenumber_max}_{iso_tag}"
 
     if table_name not in tableList():
-        fetch(table_name, molecule_id, 1, wavenumber_min, wavenumber_max)
+        if global_iso_ids:
+            # 使用你提供的多同位素下载函数
+            fetch_by_ids(table_name, global_iso_ids, wavenumber_min, wavenumber_max)
+        else:
+            # 兼容逻辑：如果没有指定，默认下载该分子的主同位素
+            # 这里假定 MOLECULE_IDS 映射依然存在
+            MOLECULE_IDS = {
+                "H2O": 1,
+                "CO2": 2,
+                "O3": 3,
+                "N2O": 4,
+                "CO": 5,
+                "CH4": 6,
+                "O2": 7,
+            }
+            fetch(
+                table_name,
+                MOLECULE_IDS[molecule_name],
+                1,
+                wavenumber_min,
+                wavenumber_max,
+            )
 
+    # 3. 数据提取与空检查
     try:
         from .hapi import LOCAL_TABLE_CACHE
 
@@ -169,27 +262,41 @@ def get_hapi_physical_params(
             for k in ["gamma_d", "gamma_l", "S", "nu0", "delta_0"]
         }
 
+    # 4. 预分配内存
     lines_params = {
-        k: np.empty(num_total_lines, dtype=np.float32)
+        k: np.zeros(num_total_lines, dtype=np.float32)
         for k in ["gamma_d", "gamma_l", "S", "nu0", "delta_0"]
     }
 
+    # 5. 核心循环：计算物理参数
+    # 提前取出常用列以提高循环效率
+    molec_ids = DATA_DICT["molec_id"]
+    local_iso_ids = DATA_DICT["local_iso_id"]
+    nus = DATA_DICT["nu"]
+
     for i in range(num_total_lines):
+        # 构建当前谱线的转换字典
         trans = {param: DATA_DICT[param][i] for param in DATA_DICT}
         trans["T"], trans["p"] = temperature_k, pressure_atm
         trans["T_ref"], trans["p_ref"] = 296.0, 1.0
         trans["Diluent"] = {"air": 1.0}
-        trans["SigmaT"] = PYTIPS(trans["molec_id"], trans["local_iso_id"], trans["T"])
-        trans["SigmaT_ref"] = PYTIPS(
-            trans["molec_id"], trans["local_iso_id"], trans["T_ref"]
-        )
 
+        # --- 优雅的配分函数处理 ---
+        # 直接使用 DATA_DICT 中自带的分子和局部同位素 ID
+        m = molec_ids[i]
+        iso = local_iso_ids[i]
+
+        # 调用你提供的 partitionSum 函数
+        trans["SigmaT"] = partitionSum(m, iso, temperature_k)
+        trans["SigmaT_ref"] = partitionSum(m, iso, 296.0)
+
+        # 计算 Voigt 参数
         line_calc_params = calculateProfileParametersVoigt(TRANS=trans)
 
         lines_params["gamma_d"][i] = line_calc_params["GammaD"]
         lines_params["gamma_l"][i] = line_calc_params["Gamma0"]
         lines_params["delta_0"][i] = line_calc_params["Delta0"]
-        lines_params["nu0"][i] = trans["nu"]
+        lines_params["nu0"][i] = nus[i]
         lines_params["S"][i] = line_calc_params["Sw"]
 
     return lines_params
@@ -461,6 +568,7 @@ if __name__ == "__main__":
 
     import sys
 
+    global_iso_ids = (None,)
     # 命令行参数: --skip-hapi 跳过HAPI计算
     SKIP_HAPI = "--skip-hapi" in sys.argv
 
@@ -521,12 +629,13 @@ if __name__ == "__main__":
     print("\n预计算HAPI物理参数...")
     t_start = time.perf_counter()
     all_layers_lines_params = Parallel(n_jobs=16)(
-        delayed(get_hapi_physical_params)(
+        delayed(get_hapi_physical_params_new)(
             MOLECULE,
             GLOBAL_WN_MIN,
             GLOBAL_WN_MAX,
             layer["temperature_k"],
             layer["pressure_pa"],
+            global_iso_ids=global_iso_ids,
         )
         for layer in tqdm(atmospheric_profile, desc="HAPI预计算")
     )

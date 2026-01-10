@@ -9,7 +9,7 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 from .run_inference_and_save import (
     create_non_uniform_grid,
-    get_hapi_physical_params,
+    get_hapi_physical_params_new,
     load_model,
     process_mega_batch_gpu,
     process_superposition_from_gpu,
@@ -44,6 +44,7 @@ def NNLBL_main(
     LP_MODEL_PATH="NNmodel&stats/voigt_model_lp_Full-nonuniform-n0_1000_noshift.pth",
     LP_STATS_PATH="NNmodel&stats/voigt_stats_lp_Full-nonuniform-n0_1000_noshift.npy",
     skip_hapi=False,
+    global_iso_ids=None,
 ):
     print("!" * 80)
     print(
@@ -111,12 +112,13 @@ def NNLBL_main(
     t_start = time.perf_counter()
 
     all_layers_lines_params = Parallel(n_jobs=16)(
-        delayed(get_hapi_physical_params)(
+        delayed(get_hapi_physical_params_new)(
             MOLECULE,
             GLOBAL_WN_MIN,
             GLOBAL_WN_MAX,
             layer["temperature_k"],
             layer["pressure_pa"],
+            global_iso_ids=global_iso_ids,
         )
         for layer in tqdm(atmospheric_profile, desc="吸收线参数计算进程")
     )

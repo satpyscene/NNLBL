@@ -10,9 +10,10 @@ if __name__ == "__main__":
     # ==========================================
     # 可选模式: "SINGLE" (单层)  |  "PROFILE" (廓线文件)
     # INPUT_MODE = "SINGLE"
-    INPUT_MODE = "PROFILE"
+    INPUT_MODE = "SINGLE"
     # 全局物理参数
     MOLECULE = "CO2"
+    glable_iso_list = [7, 8, 9]
     WN_MIN = 600
     WN_MAX = 700
     WN_STEP = 0.01
@@ -111,4 +112,5 @@ if __name__ == "__main__":
         LP_MODEL_PATH=model_paths["LP_MODEL"],
         LP_STATS_PATH=model_paths["LP_STATS"],
         skip_hapi=SKIP_HAPI,
+        global_iso_ids=glable_iso_list,
     )
