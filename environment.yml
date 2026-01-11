@@ -8,6 +8,7 @@ dependencies:
   - torchvision
   - numpy
   - h5py
+  - netCDF4
   - tqdm
   - joblib
   - matplotlib

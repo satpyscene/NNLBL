@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import pickle
 import hashlib
+from pathlib import Path
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from .run_inference_and_save import (
@@ -90,12 +91,113 @@ def generate_molecule_label(global_iso_ids):
     return "_".join(name_segments)
 
 
+def _load_and_standardize_data(mode, single_cfg, profile_cfg, base_dir):
+    suffix = ""
+    if mode == "SINGLE":
+        p = np.array([single_cfg["p_pa"]]).reshape(1)
+        t = np.array([single_cfg["t_k"]]).reshape(1)
+        v = np.array([single_cfg.get("vmr", 0.0)]).reshape(1)
+        suffix = f"{int(p[0])}_{int(t[0])}"
+
+    elif mode == "PROFILE":
+        # 支持绝对路径或相对路径
+        prof_dir = base_dir / profile_cfg.get("dir", "")
+        p_path = prof_dir / profile_cfg["p_file"]
+        t_path = prof_dir / profile_cfg["t_file"]
+
+        if not p_path.exists():
+            raise FileNotFoundError(f"❌ 找不到文件: {p_path}")
+
+        p = np.loadtxt(p_path) * 100  # mb -> Pa
+        t = np.loadtxt(t_path)
+
+        vmr_path = prof_dir / profile_cfg["vmr_file"]
+        if vmr_path.exists():
+            v = np.loadtxt(vmr_path) * 1e-6
+        else:
+            v = np.zeros_like(p)
+        suffix = profile_cfg["name_tag"]
+    else:
+        raise ValueError(f"未知模式: {mode}")
+
+    return p, t, v, suffix
+
+
 # ==============================================================================
 # 1. 全局配置常量 (System Configuration)
 #    这些参数定义了环境、模型路径和物理常数，通常在main内部直接调用
 # ==============================================================================
 
 # --- 路径配置 (服务器/环境相关) ---
+
+
+def NNLBL_API(
+    target_iso_list,
+    spectral_config,
+    input_mode,
+    single_config,
+    profile_config,
+    path_config,
+    enable_continuum=True,
+    skip_hapi=False,
+):
+    """
+    NNLBL 的高级封装接口。负责数据加载、路径推导，最后调用核心算法。
+    """
+    base_dir = Path(path_config["base_dir"])
+
+    # --- A. 自动加载数据 ---
+    # (把之前的 load_input_data 逻辑搬到这里)
+    p_vals, t_vals, vmr_vals, file_suffix = _load_and_standardize_data(
+        input_mode, single_config, profile_config, base_dir
+    )
+
+    # --- B. 自动推导模型路径 ---
+    # (假设模型都在规定的文件夹下，不需要用户一个个传)
+    model_dir = base_dir / path_config["model_dir"]
+    model_paths = {
+        "hp_m": str(model_dir / "voigt_model_hp_Full-nonuniform-n0_1000_noshift.pth"),
+        "hp_s": str(model_dir / "voigt_stats_hp_Full-nonuniform-n0_1000_noshift.npy"),
+        "lp_m": str(model_dir / "voigt_model_lp_Full-nonuniform-n0_1000_noshift.pth"),
+        "lp_s": str(model_dir / "voigt_stats_lp_Full-nonuniform-n0_1000_noshift.npy"),
+    }
+
+    # --- C. 自动生成输出文件名 ---
+    mol_label = generate_molecule_label(target_iso_list)
+    output_dir = base_dir / path_config["output_dir"]
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{mol_label}_{spectral_config['min']}_{spectral_config['max']}_{spectral_config['step']}_{file_suffix}.h5"
+    output_path = str(output_dir / filename)
+
+    print(f"任务标识: {mol_label}")
+    print(f"数据加载: {len(p_vals)} 层")
+    print(f"输出目标: {output_path}")
+
+    # --- D. 检查 MT-CKD ---
+    mtckd_path = str(base_dir / path_config["mtckd_file"])
+    if 1 in target_iso_list and not os.path.exists(mtckd_path):
+        print(f"⚠️ 警告: 计算水汽但找不到 MT-CKD 文件: {mtckd_path}")
+
+    # --- E. 调用内核 (原来的 NNLBL_main) ---
+    NNLBL_main(
+        MOLECULE=mol_label,
+        GLOBAL_WN_MIN=spectral_config["min"],
+        GLOBAL_WN_MAX=spectral_config["max"],
+        GLOBAL_WN_STEP=spectral_config["step"],
+        input_pressures=p_vals,
+        input_temperatures=t_vals,
+        input_vmrs=vmr_vals,
+        mtckd_path=mtckd_path,
+        output_path=output_path,
+        HP_MODEL_PATH=model_paths["hp_m"],
+        HP_STATS_PATH=model_paths["hp_s"],
+        LP_MODEL_PATH=model_paths["lp_m"],
+        LP_STATS_PATH=model_paths["lp_s"],
+        skip_hapi=skip_hapi,
+        global_iso_ids=target_iso_list,
+        enable_continuum=enable_continuum,
+    )
 
 
 # ==============================================================================

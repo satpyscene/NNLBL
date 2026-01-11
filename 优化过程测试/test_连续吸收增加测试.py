@@ -60,5 +60,5 @@ def compare_hapi_outputs(old_file_path, new_file_path):
 # 使用示例
 compare_hapi_outputs(
     "/Users/user/Desktop/0_NNLBL_main_use/sigma_output_filefold/H2O_Major_600_700_0.01_101325_296_无连续吸收.h5",
-    "/Users/user/Desktop/0_NNLBL_main_use/sigma_output_filefold/H2O_Major_600_700_0.01_101325_296_有连续吸收.h5",
+    "/Users/user/Desktop/0_NNLBL_main_use/sigma_output_filefold/H2O_Major_600_700_0.01_101325_296.h5",
 )
