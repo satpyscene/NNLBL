@@ -16,7 +16,7 @@ from NNLBL_src.NNLBL_main import NNLBL_API
 # 用户配置区 (User Configuration)
 # ==============================================================================
 
-# 1. 计算目标
+# 1. 计算目标,想计算什么分子，什么同位素，往里边写序号就行，写几个都成
 TARGET_ISO_LIST = [1]
 ENABLE_CONTINUUM = True
 
@@ -33,7 +33,7 @@ PROFILE_PARAMS = {
     "dir": "atmospheric_profile_for_testing",
     "p_file": "pres_100.txt",
     "t_file": "US_STANDARD_ATMOSPHERE_T.txt",
-    "vmr_file": "US_STANDARD_ATMOSPHERE_H2O.txt",
+    "vmr_file": "US_STANDARD_ATMOSPHERE_h2o.txt",
     "name_tag": "US_STD_100",
 }
 
