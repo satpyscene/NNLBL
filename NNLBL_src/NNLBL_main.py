@@ -16,6 +16,7 @@ from .run_inference_and_save import (
     calculate_hapi_benchmark_new,
     save_to_hdf5,
 )
+from .mt_ckd_h2o import MTCKD_H2O
 
 
 def generate_molecule_label(global_iso_ids):
@@ -109,6 +110,8 @@ def NNLBL_main(
     GLOBAL_WN_STEP,
     input_pressures,
     input_temperatures,
+    input_vmrs,
+    mtckd_path,
     output_path,
     HP_MODEL_PATH="NNmodel&stats/voigt_model_hp_Full-nonuniform-n0_1000_noshift.pth",
     HP_STATS_PATH="NNmodel&stats/voigt_stats_hp_Full-nonuniform-n0_1000_noshift.npy",
@@ -116,6 +119,7 @@ def NNLBL_main(
     LP_STATS_PATH="NNmodel&stats/voigt_stats_lp_Full-nonuniform-n0_1000_noshift.npy",
     skip_hapi=False,
     global_iso_ids=None,
+    enable_continuum=True,  # <--- [修改 1] 新增开关，默认开启
 ):
     print("!" * 80)
     print(
@@ -139,7 +143,9 @@ def NNLBL_main(
     print(f"使用设备: {DEVICE}")
 
     # 全局均匀网格 (用于最终输出)
-    global_wavenumber_grid = np.arange(GLOBAL_WN_MIN, GLOBAL_WN_MAX, GLOBAL_WN_STEP)
+    global_wavenumber_grid = np.arange(
+        GLOBAL_WN_MIN, GLOBAL_WN_MAX + GLOBAL_WN_STEP * 0.5, GLOBAL_WN_STEP
+    )
 
     # 基础非均匀网格 (用于神经网络输入)
     base_wavenumber_grid = create_non_uniform_grid(
@@ -156,11 +162,17 @@ def NNLBL_main(
     # 确保输入是 numpy 数组
     p_data = np.array(input_pressures, dtype=float)
     t_data = np.array(input_temperatures, dtype=float)
-
+    if input_vmrs is None:
+        # 如果是单层，给 0.0；如果是多层，给全 0
+        # 这里简单处理，假设外层已经处理好了 input_vmrs 不为 None
+        vmr_data = np.zeros_like(p_data, dtype=float)
+    else:
+        vmr_data = np.array(input_vmrs, dtype=float)
     # 自动判断：如果是单个数字(0维)，转为1维数组；如果是数组，保持原样
     if p_data.ndim == 0:
         p_data = p_data.reshape(1)
         t_data = t_data.reshape(1)
+        vmr_data = vmr_data.reshape(1)  # [修改点 2] VMR 也要 reshape，保证可迭代
         print(">> 模式检测: 单层输入 (Single Layer)")
     else:
         print(f">> 模式检测: 大气廓线输入 (Profile, {len(p_data)} Layers)")
@@ -169,10 +181,16 @@ def NNLBL_main(
     if p_data.shape != t_data.shape:
         raise ValueError("❌ 错误: 气压和温度数据的长度不一致！")
 
+    # 必须确保 P, T, VMR 三者长度完全一样，否则 zip 会丢失数据
+    if not (p_data.shape == t_data.shape == vmr_data.shape):
+        raise ValueError(
+            f"❌ 错误: 输入数据长度不一致！\n"
+            f"P: {p_data.shape}, T: {t_data.shape}, VMR: {vmr_data.shape}"
+        )
     # 直接使用输入值作为层的状态
     atmospheric_profile = [
-        {"layer": i, "pressure_pa": p, "temperature_k": t}
-        for i, (p, t) in enumerate(zip(p_data, t_data))
+        {"layer": i, "pressure_pa": p, "temperature_k": t, "vmr": vmr}
+        for i, (p, t, vmr) in enumerate(zip(p_data, t_data, vmr_data))
     ]
     print(f"大气分子参数加载: 共 {len(atmospheric_profile)} 层")
 
@@ -190,6 +208,7 @@ def NNLBL_main(
             layer["temperature_k"],
             layer["pressure_pa"],
             global_iso_ids=global_iso_ids,
+            vmr=layer["vmr"],
         )
         for layer in tqdm(atmospheric_profile, desc="吸收线参数计算进程")
     )
@@ -300,6 +319,82 @@ def NNLBL_main(
         f"NNLBL吸收截面光谱计算结束，耗时: {time.perf_counter() - t_infer_start:.2f}秒"
     )
 
+    continuum_cache = []
+
+    # 1. 判断是否需要计算
+    is_h2o_task = "H2O" in MOLECULE or (global_iso_ids and 1 in global_iso_ids)
+    should_run_continuum = enable_continuum and is_h2o_task
+
+    if should_run_continuum:
+        print("\n" + "=" * 60)
+        print("启动 MT-CKD 水汽连续吸收计算模块")
+        if not os.path.exists(mtckd_path):
+            print(f"❌ 错误: 找不到 MT-CKD 数据文件: {mtckd_path}")
+            print(">> 跳过连续吸收叠加，结果将仅包含线吸收！")
+            should_run_continuum = False  # 强制关闭
+        else:
+            t_cont_start = time.perf_counter()
+            # 2. 实例化模型 (只加载一次文件，提高效率)
+            print(f"加载 MT-CKD 模型: {os.path.basename(mtckd_path)}")
+            mtckd_model = MTCKD_H2O(mtckd_path)
+
+            print(f"正在计算 {len(atmospheric_profile)} 层的连续吸收...")
+
+            # 3. 逐层计算
+            for i, layer in enumerate(atmospheric_profile):
+                p_pa = layer["pressure_pa"]
+                t_k = layer["temperature_k"]
+                vmr = layer["vmr"]
+
+                # 单位转换: Pa -> hPa
+                p_hpa = p_pa / 100.0
+
+                # 如果 VMR 极小，连续吸收可忽略 (避免计算开销)
+                if vmr < 1e-9:
+
+                    cont_total = np.zeros_like(global_wavenumber_grid)
+                    # print("vmr=", vmr)
+                    # import matplotlib.pyplot as plt
+
+                    # plt.plot(cont_total)
+                else:
+                    # [核心调用] 使用你提供的接口
+                    # 注意: global_wavenumber_grid 必须与 returned nu 一致
+                    # mtckd 模块内部通常会重新生成网格，这里我们只取吸收值
+
+                    _, val_self, val_for = mtckd_model.get_absorption(
+                        p_hpa,  # hPa
+                        t_k,  # K
+                        vmr,  # VMR
+                        GLOBAL_WN_MIN,
+                        GLOBAL_WN_MAX,
+                        GLOBAL_WN_STEP,
+                        radflag=True,
+                    )
+                    # 叠加 Self 和 Foreign 分量
+                    cont_total = val_self + val_for
+
+                    # [单位校验警示]
+                    # 假设 mtckd 返回的是与 NN 输出一致的单位 (通常是截面 cm2 或 系数 cm-1)
+                    # 如果 NN 输出是截面 (cm2/molecule)，确保 cont_total 也是截面！
+
+                # 4. 暂存结果 (给后续 HAPI Benchmark 用)
+                continuum_cache.append(cont_total)
+
+                # 5. 叠加到 NN 预测结果上 (In-place addition)
+                if all_layer_absorptions[i] is not None:
+                    print(
+                        "all_layer_absorptions.shape&cont_total:",
+                        len(all_layer_absorptions[i]),
+                        len(cont_total),
+                    )
+                    all_layer_absorptions[i] = all_layer_absorptions[i] + cont_total
+
+            print(f"连续吸收处理完成，耗时: {time.perf_counter() - t_cont_start:.2f}秒")
+            print("=" * 60)
+    elif enable_continuum and not is_h2o_task:
+        print("\n>> 提示: 检测到非水汽分子，跳过连续吸收计算。")
+
     # ---------------------------------------------------
     # F. HAPI 基准计算与缓存
     # ---------------------------------------------------
@@ -313,7 +408,9 @@ def NNLBL_main(
         )
         # 缓存键生成：基于分子、范围以及输入数据的特征(避免过长文件名)
         # 使用数据摘要(长度 + 首元素)来区分不同输入
-        data_signature = f"L{len(p_data)}_P{p_data[0]:.2f}_T{t_data[0]:.2f}"
+        data_signature = (
+            f"L{len(p_data)}_P{p_data[0]:.2f}_T{t_data[0]:.2f}_VMR{vmr_data[0]:.4f}"
+        )
         cache_key = (
             f"{MOLECULE}_{GLOBAL_WN_MIN}_{GLOBAL_WN_MAX}_{iso_tag}_{data_signature}"
         )
@@ -340,6 +437,7 @@ def NNLBL_main(
                     GLOBAL_WN_MIN,
                     GLOBAL_WN_MAX,
                     global_iso_ids=global_iso_ids,
+                    vmr=layer["vmr"],
                 )
                 for layer in tqdm(atmospheric_profile, desc="HAPI计算")
             )
@@ -349,6 +447,18 @@ def NNLBL_main(
             with open(hapi_cache_path, "wb") as f:
                 pickle.dump(hapi_results, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+        # 无论结果是刚算出来的，还是缓存读出来的，都要在这里叠加
+        if hapi_results is not None and should_run_continuum and continuum_cache:
+            print("正在将连续吸收叠加到 HAPI 基准结果中...")
+            # hapi_results 应该是一个列表，长度等于层数
+            for i in range(len(hapi_results)):
+                # 确保维度一致
+                hapi_results[i] = hapi_results[i] + continuum_cache[i]
+            print(">> HAPI 基准结果修正完成 (Voigt + MT_CKD)")
+
+            print(continuum_cache)
+        else:
+            print("连续吸收没加到hapi结果上")
     # ---------------------------------------------------
     # G. 数据保存
     # ---------------------------------------------------

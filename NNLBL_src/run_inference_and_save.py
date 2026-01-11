@@ -205,6 +205,7 @@ def get_hapi_physical_params_new(
     temperature_k,
     pressure_pa,
     global_iso_ids=None,  # 接收全局 ID 列表，例如 [1, 2] 代表水汽的 H216O 和 H218O
+    vmr=0.0,
 ):
     # 1. 基础参数准备
     pressure_atm = pressure_pa / 101325.0
@@ -273,13 +274,25 @@ def get_hapi_physical_params_new(
     molec_ids = DATA_DICT["molec_id"]
     local_iso_ids = DATA_DICT["local_iso_id"]
     nus = DATA_DICT["nu"]
+    print("debug:molec_ids[0]=", molec_ids[0])
+    is_h2o_data = len(molec_ids) > 0 and int(molec_ids[0]) == 1
+    if is_h2o_data and vmr > 0:
+        # 自加宽修正逻辑：
+        # self = 当前水汽浓度
+        # air = 剩下的背景气体
+        current_diluent = {"self": vmr, "air": 1.0 - vmr}
+        print(current_diluent, "分子自加宽订正gammaL生效")
+    else:
+        # 默认逻辑：无限稀释 (纯空气背景)
+        current_diluent = {"air": 1.0}
+        print("无限稀释，分子自加宽订正gammaL没有生效")
 
     for i in range(num_total_lines):
         # 构建当前谱线的转换字典
         trans = {param: DATA_DICT[param][i] for param in DATA_DICT}
         trans["T"], trans["p"] = temperature_k, pressure_atm
         trans["T_ref"], trans["p_ref"] = 296.0, 1.0
-        trans["Diluent"] = {"air": 1.0}
+        trans["Diluent"] = current_diluent
 
         # --- 优雅的配分函数处理 ---
         # 直接使用 DATA_DICT 中自带的分子和局部同位素 ID
@@ -512,6 +525,7 @@ def calculate_hapi_benchmark_new(
     wavenumber_min,
     wavenumber_max,
     global_iso_ids=None,  # 新增参数
+    vmr=0.0,
 ):
     # 1. 参数预处理
     pressure_atm = pressure_pa / 101325.0
@@ -543,12 +557,15 @@ def calculate_hapi_benchmark_new(
             molecule_id = MOLECULE_IDS[molecule_name]
             fetch(table_name, molecule_id, 1, wavenumber_min, wavenumber_max)
 
+    diluent_settings = {"self": vmr, "air": 1.0 - vmr}
+
     # 4. 调用 HAPI 原生函数计算吸收截面
     # HAPI 在计算时会自动根据表中的 molec_id 和 local_iso_id 处理各自的 TIPS 配分函数
     nu, coef = absorptionCoefficient_Voigt(
         SourceTables=table_name,
         WavenumberGrid=wavenumber_grid,
         Environment={"p": pressure_atm, "T": temperature_k},
+        Diluent=diluent_settings,
         HITRAN_units=True,
         WavenumberWing=25,
     )
