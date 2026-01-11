@@ -9,14 +9,6 @@ class MTCKD_H2O:
     对应 Fortran 模块: mt_ckd_h2o, read_file, phys_consts
     """
 
-    # self_absco –
-    # • for radflag = 0, computed self continuum coefficients (cm2/(molecule cm-1))
-    # • for radflag = 1, computed self continuum absorption coefficients (cm2/molecule)*
-
-    #     for_absco -
-    # • for radflag = 0, computed foreign continuum coefficients (cm2/(molecule cm-1))
-    # • for radflag = 1, computed foreign continuum absorption coefficients (cm2/molecule)*
-
     # --- 来自 phys_consts 模块的常量 ---
     RADCN2 = 1.4387752  # cm K
 
@@ -149,14 +141,6 @@ class MTCKD_H2O:
             wv1, wv2 (float): 计算波数范围 (cm-1)
             dwv (float): 输出波数步长 (cm-1)
             radflag (bool): 是否乘以辐射项 (默认 True)
-
-            self_absco –
-            • for radflag = Flase, computed self continuum coefficients (cm2/(molecule cm-1))
-            • for radflag = True, computed self continuum absorption coefficients (cm2/molecule)*
-
-                for_absco -
-            • for radflag = Flase, computed foreign continuum coefficients (cm2/(molecule cm-1))
-            • for radflag = True, computed foreign continuum absorption coefficients (cm2/molecule)*
 
         返回:
             tuple: (wvn_out, self_absco, for_absco)

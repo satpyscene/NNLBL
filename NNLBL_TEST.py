@@ -11,6 +11,8 @@ from NNLBL_src.NNLBL_main import NNLBL_main, generate_molecule_label
 # CO:  [26, 27, 28, 29, 30, 31]         |  CH4: [32, 33, 34, 35]
 # O2:  [36, 37, 38]
 # ==============================================================================
+# 由于水汽计算的特殊性，计算水汽吸收截面时，要求用户必须输入水汽的相对湿度或者体积混合比，作为get_hapi_physical_params_new中背景大气成分设置以及mt-ckd中水汽连续吸收的设置
+
 
 if __name__ == "__main__":
 
@@ -20,7 +22,7 @@ if __name__ == "__main__":
 
     # [计算目标] 填写全局编号 (Global IDs)，支持多分子混合
     # 例如: CO2主同位素(7) + H2O主同位素(1) -> [7, 1]
-    TARGET_ISO_LIST = [1, 2, 7, 8, 9, 16, 17]
+    TARGET_ISO_LIST = [1]
 
     # [光谱范围] 波数 (cm^-1)
     WN_MIN, WN_MAX, WN_STEP = 600, 700, 0.01
