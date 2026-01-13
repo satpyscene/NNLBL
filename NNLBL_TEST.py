@@ -28,7 +28,10 @@ RUN_MODE = "SINGLE"
 
 # 4. 环境参数配置
 SINGLE_PARAMS = {"p_pa": 101325.0, "t_k": 296.0, "vmr": 0.01}
-
+print("压强单位是pa哈，别整错了。vmr是体积百分比，10000ppmv，就是1%，vmr就是0.01")
+print(
+    "下面这个廓线输入理论上也是和单层输入的单位一样，所以后面再设计一下单位问题，现在不想搞了"
+)
 PROFILE_PARAMS = {
     "dir": "atmospheric_profile_for_testing",
     "p_file": "pres_100.txt",
