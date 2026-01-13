@@ -485,11 +485,7 @@ def NNLBL_main(
 
                 # 5. 叠加到 NN 预测结果上 (In-place addition)
                 if all_layer_absorptions[i] is not None:
-                    print(
-                        "all_layer_absorptions.shape&cont_total:",
-                        len(all_layer_absorptions[i]),
-                        len(cont_total),
-                    )
+
                     all_layer_absorptions[i] = all_layer_absorptions[i] + cont_total
 
             print(f"连续吸收处理完成，耗时: {time.perf_counter() - t_cont_start:.2f}秒")
@@ -558,7 +554,6 @@ def NNLBL_main(
                 hapi_results[i] = hapi_results[i] + continuum_cache[i]
             print(">> HAPI 基准结果修正完成 (Voigt + MT_CKD)")
 
-            print(continuum_cache)
         else:
             print("连续吸收没加到hapi结果上")
     # ---------------------------------------------------

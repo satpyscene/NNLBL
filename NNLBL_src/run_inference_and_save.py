@@ -276,16 +276,12 @@ def get_hapi_physical_params_new(
     nus = DATA_DICT["nu"]
     print("debug:molec_ids[0]=", molec_ids[0])
     is_h2o_data = len(molec_ids) > 0 and int(molec_ids[0]) == 1
-    if is_h2o_data and vmr > 0:
-        # 自加宽修正逻辑：
-        # self = 当前水汽浓度
-        # air = 剩下的背景气体
-        current_diluent = {"self": vmr, "air": 1.0 - vmr}
-        print(current_diluent, "分子自加宽订正gammaL生效")
-    else:
-        # 默认逻辑：无限稀释 (纯空气背景)
-        current_diluent = {"air": 1.0}
-        print("无限稀释，分子自加宽订正gammaL没有生效")
+
+    # 自加宽修正逻辑：
+    # self = 当前水汽浓度
+    # air = 剩下的背景气体
+    current_diluent = {"self": vmr, "air": 1.0 - vmr}
+    print(current_diluent, "分子自加宽订正gammaL生效")
 
     for i in range(num_total_lines):
         # 构建当前谱线的转换字典
