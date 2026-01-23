@@ -3,62 +3,76 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def compare_hapi_outputs(old_file_path, new_file_path):
+def compare_hapi_outputs_three(file_paths, labels):
     # 1. 读取数据
-    with h5py.File(old_file_path, "r") as f_old, h5py.File(new_file_path, "r") as f_new:
-        # 假设数据路径为 model_output/layer_000
-        # 如果 layer_000 下还有子字段（如 'wavenumber' 和 'absorption'），请根据实际修改
+    data_list = []
+    for fp in file_paths:
+        with h5py.File(fp, "r") as f:
+            data = f["model_output/layer_000"][:]
+            data_list.append(data)
 
-        old_data = f_old["model_output/layer_000"][:]
-        new_data = f_new["model_output/layer_000"][:]
+    # 假设三个文件长度一致
+    # x_axis = np.arange(len(data_list[0]))
+    x_axis = np.arange(4800, 5200.001, 0.01)
+    # 2. 以第一个文件作为基准，计算差异和相对误差
+    base_data = data_list[0]
+    diffs = [data - base_data for data in data_list[1:]]
+    res = [diff / base_data for diff in diffs]
 
-        # old_data = f_old["hapi_benchmark/layer_000"][:]
-        # new_data = f_new["hapi_benchmark/layer_000"][:]
-
-        # old_data = f_new["hapi_benchmark/layer_000"][:]
-        # new_data = f_new["model_output/layer_000"][:]
-
-        # 如果文件中存储了波数轴，也一并读取（假设两文件波数轴一致）
-        # wavenumbers = f_old['model_output/wavenumbers'][:]
-        # 如果没有，则生成索引轴
-        x_axis = np.arange(len(old_data))
-
-    # 2. 计算差异
-    diff = new_data - old_data
-    max_diff = np.max(np.abs(diff))
-    mean_diff = np.mean(diff)
-    RE = diff / old_data
-    print(f"对比结果:")
-    print(f"最大绝对偏差: {max_diff:.30e}")
-    print(f"平均偏差: {mean_diff:.30e}")
+    print("对比结果（相对于基准 vmr）:")
+    for i, diff in enumerate(diffs):
+        print(f"{labels[i+1]} vs {labels[0]}")
+        print(f"  最大绝对偏差: {np.max(np.abs(diff)):.30e}")
+        print(f"  平均偏差: {np.mean(diff):.30e}")
 
     # 3. 绘图可视化
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(12, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1]}
+    fig, axes = plt.subplots(
+        1,
+        1,
+        figsize=(6, 4),
+        sharex=True,
+        # gridspec_kw={"height_ratios": [3, 1.5, 1.5]},
     )
 
-    # 上图：两条曲线叠加
-    ax1.plot(x_axis, old_data, label="no h2o vmr", alpha=0.8)
-    ax1.plot(x_axis, new_data, label="h2o vmr 0p01", linestyle="--", alpha=0.8)
-    ax1.set_ylabel("Value (Absorption / Transmission)")
-    ax1.set_yscale("log")
-    ax1.set_title("Comparison of CO2 Model Output (Layer 000)")
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+    # 上图：三条吸收截面曲线
+    for data, label in zip(data_list, labels):
+        axes.plot(x_axis, data, label=label, alpha=0.8)
+    axes.set_yscale("log")
+    axes.set_ylabel("Absorption Cross Section (cm$^2$/molc.)")
+    axes.set_xlabel("Wavenumber cm$^{-1}$")
+    axes.set_title("Impact of Different H2O VMR Settings on Absorption Cross Section")
+    axes.legend()
+    axes.grid(True, alpha=0.3)
 
-    # 下图：残差图
-    ax2.plot(x_axis, RE * 100, color="red", label="Residual (New - Old)/Old")
-    ax2.set_ylabel("RE %")
-    ax2.set_xlabel("Index / Wavenumber")
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
+    # # 中图：绝对差异
+    # for diff, label in zip(diffs, labels[1:]):
+    #     axes[1].plot(x_axis, diff, label=f"{label} - {labels[0]}")
+    # axes[1].set_ylabel("Absolute Difference")
+    # axes[1].grid(True, alpha=0.3)
+    # axes[1].legend()
+
+    # # 下图：相对误差（百分比）
+    # for re, label in zip(res, labels[1:]):
+    #     axes[2].plot(x_axis, re * 100, label=f"{label} vs {labels[0]}")
+    # axes[2].set_ylabel("Relative Error (%)")
+    # axes[2].set_xlabel("Index / Wavenumber")
+    # axes[2].grid(True, alpha=0.3)
+    # axes[2].legend()
 
     plt.tight_layout()
     plt.show()
 
 
 # 使用示例
-compare_hapi_outputs(
-    "sigma_output_filefold/H2O_Major_600_700_0.01_101325_296水汽vmr为0.h5",
-    "sigma_output_filefold/H2O_Major_600_700_0.01_101325_296_水汽vmr0p01背景稀释.h5",
+compare_hapi_outputs_three(
+    file_paths=[
+        "../sigma_output_filefold/vmr0p0001_H2O_Major_4800_5200_0.01_101325_296.h5",
+        "../sigma_output_filefold/vmr0p01_H2O_Major_4800_5200_0.01_101325_296.h5",
+        "../sigma_output_filefold/vmr0p04_H2O_Major_4800_5200_0.01_101325_296.h5",
+    ],
+    labels=[
+        "H2O vmr = 0.0001 (baseline)",
+        "H2O vmr = 0.01",
+        "H2O vmr = 0.04",
+    ],
 )

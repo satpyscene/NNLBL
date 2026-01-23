@@ -16,19 +16,19 @@ from NNLBL_src.NNLBL_main import NNLBL_API
 # 用户配置区 (User Configuration)
 # ==============================================================================
 
-# 1. 计算目标,想计算什么分子，什么同位素，往里边写序号就行，写几个都成
-TARGET_ISO_LIST = [1]
-ENABLE_CONTINUUM = True
+# 1. 计算目标,想计算什么同位素，往里边写序号就行，但是只能填一个分子的同位素，如果填了不同分子的，就会把吸收截面混在一起，后续你想计算光学厚度的时候，没办法分开乘各自的分子数量
+TARGET_ISO_LIST = [1, 2]
+ENABLE_CONTINUUM = False
 
 # 2. 光谱参数
-SPECTRAL_CONFIG = {"min": 600, "max": 700, "step": 0.01}
+SPECTRAL_CONFIG = {"min": 4800, "max": 5200, "step": 0.01}
 
 # 3. 运行模式 ("SINGLE" 或 "PROFILE")
 RUN_MODE = "SINGLE"
 
 # 4. 环境参数配置
-SINGLE_PARAMS = {"p_pa": 101325.0, "t_k": 296.0, "vmr": 0.01}
-print("压强单位是pa哈，别整错了。vmr是体积百分比，10000ppmv，就是1%，vmr就是0.01")
+SINGLE_PARAMS = {"p_pa": 101325.0, "t_k": 296.0, "vmr": 0.04}
+print("压强单位是pa哈，别整错了。vmr是体积百分比，10000ppmv，就是1%，也就是0.01")
 print(
     "下面这个廓线输入理论上也是和单层输入的单位一样，所以后面再设计一下单位问题，现在不想搞了"
 )
@@ -53,7 +53,6 @@ PATH_CONFIG = {
 # ==============================================================================
 if __name__ == "__main__":
 
-    # 一行代码启动，无需任何逻辑处理
     NNLBL_API(
         target_iso_list=TARGET_ISO_LIST,
         spectral_config=SPECTRAL_CONFIG,

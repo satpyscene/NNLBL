@@ -20,6 +20,43 @@ from .run_inference_and_save import (
 from .mt_ckd_h2o import MTCKD_H2O
 
 
+def validate_single_molecule_iso_list(global_iso_ids):
+    """
+    检查 target_iso_list 是否只包含同一种分子的同位素编号
+    """
+    TOP7_ISO_TABLE = {
+        "H2O": [1, 2, 3, 4, 5, 6, 129],
+        "CO2": [7, 8, 9, 10, 11, 12, 13, 14],
+        "O3": [16, 17, 18, 19, 20],
+        "N2O": [21, 22, 23, 24, 25],
+        "CO": [26, 27, 28, 29, 30, 31],
+        "CH4": [32, 33, 34, 35],
+        "O2": [36, 37, 38],
+    }
+
+    if not global_iso_ids:
+        raise ValueError("❌ target_iso_list 不能为空")
+
+    found_molecules = set()
+
+    for gid in global_iso_ids:
+        matched = False
+        for mol, iso_list in TOP7_ISO_TABLE.items():
+            if gid in iso_list:
+                found_molecules.add(mol)
+                matched = True
+                break
+        if not matched:
+            raise ValueError(f"❌ 同位素编号 {gid} 不在支持的 TOP7 分子表中")
+
+    if len(found_molecules) > 1:
+        raise ValueError(
+            f"❌ 不允许混合不同分子的同位素编号: 检测到 {sorted(found_molecules)}"
+        )
+
+    # 返回分子名，供需要时使用
+    return next(iter(found_molecules))
+
 def generate_molecule_label(global_iso_ids):
     # ==========================================
     # 1. 你的专属数据表
@@ -161,6 +198,10 @@ def NNLBL_API(
         "lp_m": str(model_dir / "voigt_model_lp_Full-nonuniform-n0_1000_noshift.pth"),
         "lp_s": str(model_dir / "voigt_stats_lp_Full-nonuniform-n0_1000_noshift.npy"),
     }
+
+    # --- C0. 校验同位素列表合法性（禁止跨分子混合） ---
+    validated_molecule = validate_single_molecule_iso_list(target_iso_list)
+    print(f"同位素校验通过，目标分子: {validated_molecule}")
 
     # --- C. 自动生成输出文件名 ---
     mol_label = generate_molecule_label(target_iso_list)
