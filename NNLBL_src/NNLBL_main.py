@@ -57,6 +57,7 @@ def validate_single_molecule_iso_list(global_iso_ids):
     # 返回分子名，供需要时使用
     return next(iter(found_molecules))
 
+
 def generate_molecule_label(global_iso_ids):
     # ==========================================
     # 1. 你的专属数据表
@@ -128,32 +129,168 @@ def generate_molecule_label(global_iso_ids):
     return "_".join(name_segments)
 
 
+# ------------------------------------------------------------------------------
+# 输入配置校验函数
+# ------------------------------------------------------------------------------
+def validate_user_config(
+    run_mode,
+    single_params,
+    profile_params,
+    spectral_config,
+    target_iso_list,
+):
+    """
+    对用户输入配置进行前置校验（fail-fast）
+    只检查“结构与显式声明”，不做任何单位转换或数值物理判断
+    """
+
+    # ---------- Run mode ----------
+    if run_mode not in ("SINGLE", "PROFILE"):
+        raise ValueError(
+            f"❌ RUN_MODE 必须是 'SINGLE' 或 'PROFILE'，当前为: {run_mode}"
+        )
+
+    # ---------- Target isotopes ----------
+    if not target_iso_list:
+        raise ValueError("❌ TARGET_ISO_LIST 不能为空")
+
+    if not all(isinstance(i, int) for i in target_iso_list):
+        raise ValueError("❌ TARGET_ISO_LIST 中必须全部为整数（HITRAN isotope ID）")
+
+    # ---------- Spectral config ----------
+    for key in ("min", "max", "step"):
+        if key not in spectral_config:
+            raise ValueError(f"❌ SPECTRAL_CONFIG 缺少字段: '{key}'")
+
+    if spectral_config["min"] >= spectral_config["max"]:
+        raise ValueError("❌ SPECTRAL_CONFIG 中 min 必须小于 max")
+
+    # ---------- SINGLE mode ----------
+    if run_mode == "SINGLE":
+        if not single_params:
+            raise ValueError("❌ RUN_MODE=SINGLE 时，必须提供 SINGLE_PARAMS")
+
+        required_single_keys = (
+            "p_pa",
+            "p_hpa",
+            "t_k",
+            "t_c",
+            "vmr",
+            "vmr_ppmv",
+        )
+
+        if not any(k in single_params for k in ("p_pa", "p_hpa")):
+            raise ValueError("❌ SINGLE_PARAMS 必须包含 p_pa 或 p_hpa")
+
+        if not any(k in single_params for k in ("t_k", "t_c")):
+            raise ValueError("❌ SINGLE_PARAMS 必须包含 t_k 或 t_c")
+
+        if not any(k in single_params for k in ("vmr", "vmr_ppmv")):
+            raise ValueError("❌ SINGLE_PARAMS 必须包含 vmr 或 vmr_ppmv")
+
+    # ---------- PROFILE mode ----------
+    if run_mode == "PROFILE":
+        if not profile_params:
+            raise ValueError("❌ RUN_MODE=PROFILE 时，必须提供 PROFILE_PARAMS")
+
+        required_profile_keys = ("p_file", "p_unit", "t_file", "t_unit")
+        for k in required_profile_keys:
+            if k not in profile_params:
+                raise ValueError(f"❌ PROFILE_PARAMS 缺少必要字段: '{k}'")
+
+        if "vmr_file" in profile_params and "vmr_unit" not in profile_params:
+            raise ValueError("❌ 提供 vmr_file 时，必须同时提供 vmr_unit")
+
+
 def _load_and_standardize_data(mode, single_cfg, profile_cfg, base_dir):
-    suffix = ""
+    """
+    数据加载 + 单位校验 + 标准化
+    要求用户在配置中显式给出单位，否则直接报错
+    内部统一转换为:
+        Pressure : Pa
+        Temperature : K
+        VMR : volume mixing ratio (无量纲)
+    """
     if mode == "SINGLE":
-        p = np.array([single_cfg["p_pa"]]).reshape(1)
-        t = np.array([single_cfg["t_k"]]).reshape(1)
-        v = np.array([single_cfg.get("vmr", 0.0)]).reshape(1)
+        # ---------- Pressure ----------
+        if "p_pa" in single_cfg:
+            p = np.array([single_cfg["p_pa"]], dtype=float)
+        elif "p_hpa" in single_cfg:
+            p = np.array([single_cfg["p_hpa"] * 100.0], dtype=float)
+        else:
+            raise ValueError("❌ SINGLE 模式必须提供气压单位: p_pa 或 p_hpa")
+
+        # ---------- Temperature ----------
+        if "t_k" in single_cfg:
+            t = np.array([single_cfg["t_k"]], dtype=float)
+        elif "t_c" in single_cfg:
+            t = np.array([single_cfg["t_c"] + 273.15], dtype=float)
+        else:
+            raise ValueError("❌ SINGLE 模式必须提供温度单位: t_k 或 t_c")
+
+        # ---------- VMR ----------
+        if "vmr" in single_cfg:
+            v = np.array([single_cfg["vmr"]], dtype=float)
+        elif "vmr_ppmv" in single_cfg:
+            v = np.array([single_cfg["vmr_ppmv"] * 1e-6], dtype=float)
+        else:
+            raise ValueError("❌ SINGLE 模式必须提供 vmr 或 vmr_ppmv")
+
         suffix = f"{int(p[0])}_{int(t[0])}"
 
     elif mode == "PROFILE":
-        # 支持绝对路径或相对路径
         prof_dir = base_dir / profile_cfg.get("dir", "")
+
+        # ---------- Pressure ----------
         p_path = prof_dir / profile_cfg["p_file"]
-        t_path = prof_dir / profile_cfg["t_file"]
-
         if not p_path.exists():
-            raise FileNotFoundError(f"❌ 找不到文件: {p_path}")
+            raise FileNotFoundError(f"❌ 找不到气压文件: {p_path}")
 
-        p = np.loadtxt(p_path) * 100  # mb -> Pa
-        t = np.loadtxt(t_path)
+        p_unit = profile_cfg.get("p_unit", None)
+        if p_unit is None:
+            raise ValueError("❌ PROFILE 模式必须声明气压单位 p_unit")
 
-        vmr_path = prof_dir / profile_cfg["vmr_file"]
+        p_raw = np.loadtxt(p_path)
+        if p_unit == "Pa":
+            p = p_raw
+        elif p_unit == "hPa":
+            p = p_raw * 100.0
+        else:
+            raise ValueError(f"❌ 不支持的气压单位: {p_unit}")
+
+        # ---------- Temperature ----------
+        t_path = prof_dir / profile_cfg["t_file"]
+        if not t_path.exists():
+            raise FileNotFoundError(f"❌ 找不到温度文件: {t_path}")
+
+        t_unit = profile_cfg.get("t_unit", None)
+        if t_unit is None:
+            raise ValueError("❌ PROFILE 模式必须声明温度单位 t_unit")
+
+        t_raw = np.loadtxt(t_path)
+        if t_unit == "K":
+            t = t_raw
+        elif t_unit == "C":
+            t = t_raw + 273.15
+        else:
+            raise ValueError(f"❌ 不支持的温度单位: {t_unit}")
+
+        # ---------- VMR ----------
+        vmr_path = prof_dir / profile_cfg.get("vmr_file", "")
+        vmr_unit = profile_cfg.get("vmr_unit", "vmr")  # 默认 vmr
+
         if vmr_path.exists():
-            v = np.loadtxt(vmr_path) * 1e-6
+            v_raw = np.loadtxt(vmr_path)
+            if vmr_unit == "vmr":
+                v = v_raw
+            elif vmr_unit == "ppmv":
+                v = v_raw * 1e-6
+            else:
+                raise ValueError(f"❌ 不支持的 VMR 单位: {vmr_unit}")
         else:
             v = np.zeros_like(p)
-        suffix = profile_cfg["name_tag"]
+
+        suffix = profile_cfg.get("name_tag", "PROFILE")
     else:
         raise ValueError(f"未知模式: {mode}")
 

@@ -117,3 +117,5 @@ B. 运行模式设置 (INPUT_MODE)
 
 💧 关于水汽 (H2O) 计算的特殊说明由于水汽分子具有强极性和显著的连续吸收效应，本程序对 Global ID = 1 (H2O) 及其同位素进行了特殊处理：自加宽 (Self-Broadening)：程序会强制检查输入数据中的 vmr (Volume Mixing Ratio)。在计算 Voigt 线型时，根据 vmr 动态调整 Diluent 参数 (self vs air)，而非简单的空气加宽。连续吸收 (Continuum)：若 ENABLE_H2O_CONTINUUM = True，程序将调用 MT-CKD 模型（基于 data/absco-ref_wv-mt-ckd.nc）。最终输出的吸收截面 = 神经网络预测 (线吸收) + MT-CKD (连续吸收)。📊 输出结果 (Output)结果将保存为 .h5 (HDF5) 格式，位于 sigma_output_filefold/ 目录下。文件名示例：MOL_1_600_700_0.01_US_STD_100.h5文件结构包含：wavenumber: 波数网格pressure: 各层气压temperature: 各层温度sigma_nn: NNLBL 计算的吸收截面 (含 Continuum)sigma_hapi: HAPI 计算的基准截面 (用于验证误差)
 🔢 附录：HITRAN 全局同位素 ID 速查表
+
+## 结果文件里，000层是高空，100层是近地面。不信你就看看，高空谱线很密集，低空稀疏。
