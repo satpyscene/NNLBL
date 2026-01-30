@@ -1,121 +1,98 @@
-# NNLBL: Neural Network Line-By-Line Absorption Calculator——基于神经网络的高速逐线积分气体吸收截面计算程序
+# NNLBL: Neural Network Line-By-Line Absorption Calculator
+**基于神经网络的高速逐线积分气体吸收截面计算程序**
 
-## 📖 项目简介 (Introduction)  
+NNLBL is a high-speed tool for calculating atmospheric gas absorption cross-sections. By replacing traditional Voigt profile convolutions with an optimized Neural Network (NN) and leveraging GPU acceleration, it achieves significant speedups while maintaining high precision compared to HAPI (HITRAN API).
 
-NNLBL 是一个用于快速计算大气气体分子吸收截面（Absorption Cross-Section）的工具。它利用神经网络（NN）替代传统的 Voigt 线型卷积计算，并针对GPU进行优化，显著提升了计算速度，同时也可以在cpu上运行，算法会优先使用GPU加速。
+NNLBL 是一个用于快速计算大气气体分子吸收截面的工具。它利用神经网络替代传统的 Voigt 线型卷积计算，并针对 GPU 进行优化，在保持高精度的前提下显著提升了计算速度。
 
-本项目核心特性包括：  
+---
 
-- 高精度：以 HAPI (HITRAN Application Programming Interface) 计算结果为真值进行检验，单色吸收截面最大相对误差小于1%，平均相对误差远小于1%。  
+## ✨ Key Features | 核心特性
 
-- 特性支持：
-  - 支持 Voigt 线型作为吸收线的线型。
-  - 线翼截断为 25 cm$^{-1}$
-  - 水汽 (H2O) 特化处理：完整集成了 自加宽 (Self-Broadening) 效应与 水汽连续吸收 (Continuum Absorption, MT-CKD模型)。
-- 双模式运行：支持单层均匀大气 (SINGLE) 和 垂直大气廓线 (PROFILE) 计算。
-- 混合模型架构：针对高压 (HP) 和低压 (LP) 环境分别优化，自动切换模型。  
+* **High Precision (高精度):** Max relative error < 1% compared to HAPI; average error << 1%.
+* **H2O Specialization (水汽特化):** Full support for **Self-Broadening** and **MT-CKD Continuum Absorption**.
+* **Hybrid Architecture (混合架构):** Automatically switches between High-Pressure (HP) and Low-Pressure (LP) models.
+* **Dual Modes (双模式):** Supports both single-layer (**SINGLE**) and vertical profile (**PROFILE**) calculations.
+* **GPU Accelerated (硬件加速):** Automatically detects and uses CUDA if available.
 
-## 📂 目录结构 (Directory Structure)  
+---
 
-在使用前，请确保项目目录包含 NNLBL_src 内的四个核心组件  
+## 📂 Project Structure | 目录结构
 
-    ```text
-    NNLBL_Project/
-    │
-    ├── environment.yml              # 环境依赖
-    │
-    ├── NNLBL_TEST.py                # [入口] 使用示例程序 (用户配置)
-    │
-    ├── NNLBL_src/                   # [源码] 核心算法模块
-    │   └── NNLBL_main.py            # 计算主逻辑
-    │   └── run_inference_and_save.py # 子模块
-    │   └── mt_ckd_h2o.py            # python化的水汽连续吸收计算模块（来自fortran版的MT-CKD-H2O）
-    │   └── hapi.py                  # HAPI包的源码 version: 1.2.2.4
-    │
-    ├── NNmodel&stats/               # [模型] 预训练的神经网络模型与统计参数
-    │   ├── voigt_model_hp_*.pth     # 高压模型
-    │   ├── voigt_model_lp_*.pth     # 低压模型
-    │   └── *.npy                    # 归一化统计参数
-    │
-    ├── data/                        # [数据] 物理常数与基准数据
-    │   ├── absco-ref_wv-mt-ckd.nc   # MT-CKD 水汽连续吸收数据
-    │   └── *hapi/                   # HAPI 下载的 HITRAN 数据库缓存
-    │
-    ├── atmospheric_profile_for_testing/ # [输入] 大气廓线测试数据
-    │   ├── pres_100.txt             # 气压层数据
-    │   ├── US_STANDARD_ATMOSPHERE_T.txt    # 温度层数据
-    │   └── US_STANDARD_ATMOSPHERE_H2O.txt  # 水汽浓度数据 (ppmv)
-    │
-    ├── sigma_output_filefold/       # [输出] 计算结果存储目录
-    └── cache/                       # [缓存] HAPI 基准计算缓存 (加速二次运行)  
-    ```  
+```text
+NNLBL_Project/
+├── NNLBL_TEST.py                # [Entry] User configuration & execution | 用户配置入口
+├── NNLBL_src/                   # [Source] Core algorithm modules | 核心源码
+│   ├── NNLBL_main.py            # Main API logic | 接口主逻辑
+│   ├── mt_ckd_h2o.py            # Pythonized MT-CKD H2O continuum | 水汽连续吸收模块
+│   └── hapi.py                  # Embedded HAPI (v1.2.2.4)
+├── NNmodel&stats/               # [Models] Pre-trained weights & normalization stats | 预训练模型
+├── data/                        # [Data] Physical constants & HITRAN cache | 物理常数与缓存
+├── atmospheric_profile_for_testing/ # [Input] Sample profiles | 大气廓线输入示例
+└── sigma_output_filefold/       # [Output] Calculated cross-sections (.h5) | 结果输出目录
+```
 
-## 🛠️ 环境依赖 (Requirements)  
+---
 
-见 environment.yml 文件
-
-## 🚀 快速开始 (Quick Start)  
-
-1. 配置参数
-
-打开主程序文件（如 NNLBL_TEST.py），在 if __name__ == "__main__": 下方修改 用户控制面板 (USER CONFIGURATION)。
-
-A. 计算目标与光谱范围
-
-    ``` python
-
-    # 选择分子同位素 ID (参考下文速查表)
-    # 示例: 仅计算水汽主同位素 -> [1]
-    # 示例: 计算 CO2 和 H2O 混合 -> [7, 1]
-    TARGET_ISO_LIST = [1] 
-
-    # 光谱范围 (波数 cm^-1)
-    WN_MIN, WN_MAX, WN_STEP = 600, 700, 0.01
-
-    # 水汽连续吸收开关 (仅当分子包含 H2O 时生效)
-    ENABLE_H2O_CONTINUUM = True 
-    ```  
-
-B. 运行模式设置 (INPUT_MODE)
-模式一：单层计算 (SINGLE)适用于实验室环境模拟或单一状态点测试。  
-
+## 🚀 Quick Start | 快速开始
+1. Configuration | 配置参数
+Edit NNLBL_TEST.py. The configuration is divided into four main parts:
+编辑 NNLBL_TEST.py，配置主要分为以下四个部分：
+- Target & Spectra | 目标与光谱
     ```python
+    TARGET_ISO_LIST = [1, 2]   # Target isotope IDs (must be from the same molecule)
+    ENABLE_CONTINUUM = False   # Enable MT-CKD (Recommended for H2O only)
 
-    INPUT_MODE = "SINGLE"
-    SINGLE_CONFIG = {
-        "p_pa": 101325.0,  # 气压 (Pa)
-        "t_k": 296.0,      # 温度 (K)
-        "vmr": 0.01        # 体积混合比 (无量纲, 0.01 = 1%)
-                        # 注意: 计算 H2O 时必须提供 vmr 以计算自加宽
-    }
-    ```  
-
-模式二：廓线计算 (PROFILE)适用于全大气层辐射传输模拟。  
-
-    ```python
-
-    INPUT_MODE = "PROFILE"
-    PROFILE_CONFIG = {
-        "p_file": "path/to/pres.txt",  # 气压文件 (单位: mb/hPa, 代码自动转Pa)
-        "t_file": "path/to/temp.txt",  # 温度文件 (单位: K)
-        "ppmv_file": "path/to/h2o.txt",# 气体浓度文件 (单位: ppmv)
-        "name": "US_STD_100"           # 输出文件名标识
+    SPECTRAL_CONFIG = {
+        "min": 4800.0, "max": 5200.0, "step": 0.01, # Unit: cm⁻¹
     }
     ```
+- Run Mode | 运行模式
+Select SINGLE for laboratory points or PROFILE for atmospheric columns.
+选择 SINGLE（单层）或 PROFILE（廓线）。
+  - Mode: SINGLE
+    ```python
+    SINGLE_PARAMS = {
+        "p_hpa": 1013.25, "t_k": 296.0, "vmr_ppmv": 40000.0
+    }
+    ```
+    - Mode: PROFILE
+    ```python
+    PROFILE_PARAMS = {
+        "dir": "path/to/profile",
+        "p_file": "pres.txt", "p_unit": "hPa",  # Support: hPa, Pa
+        "t_file": "temp.txt", "t_unit": "K",    # Support: K, C
+        "vmr_file": "h2o.txt", "vmr_unit": "ppmv",
+        "name_tag": "US_STD_100"
+    }
+    ```
+2. Run | 执行
+```bash
+python example_config_NNLBL.py
+```
 
-2. 运行程序  
+---
 
-    ```bash  
-    python run_NNLBL.py
-    ```  
+## 📊 Output & Data | 结果与数据说明
+- Output Format | 输出格式
+```text
+Results are saved in .h5 format.
+结果以 .h5 格式存储。
+```
+- Vertical Ordering (廓线层级说明):
 
-- 如需跳过耗时的 HAPI 基准验证，可添加参数：  
+  - Layer 000: Top of atmosphere (High altitude). Spectrum lines are sharp/dense.
 
-        ```bash
-        python run_NNLBL.py --skip-hapi
-        ```  
+  - Layer 100: Near surface (Low altitude). Spectrum lines are broad/sparse due to pressure broadening.
 
-💧 关于水汽 (H2O) 计算的特殊说明由于水汽分子具有强极性和显著的连续吸收效应，本程序对 Global ID = 1 (H2O) 及其同位素进行了特殊处理：自加宽 (Self-Broadening)：程序会强制检查输入数据中的 vmr (Volume Mixing Ratio)。在计算 Voigt 线型时，根据 vmr 动态调整 Diluent 参数 (self vs air)，而非简单的空气加宽。连续吸收 (Continuum)：若 ENABLE_H2O_CONTINUUM = True，程序将调用 MT-CKD 模型（基于 data/absco-ref_wv-mt-ckd.nc）。最终输出的吸收截面 = 神经网络预测 (线吸收) + MT-CKD (连续吸收)。📊 输出结果 (Output)结果将保存为 .h5 (HDF5) 格式，位于 sigma_output_filefold/ 目录下。文件名示例：MOL_1_600_700_0.01_US_STD_100.h5文件结构包含：wavenumber: 波数网格pressure: 各层气压temperature: 各层温度sigma_nn: NNLBL 计算的吸收截面 (含 Continuum)sigma_hapi: HAPI 计算的基准截面 (用于验证误差)
-🔢 附录：HITRAN 全局同位素 ID 速查表
+  - 第 000 层：高空（气压低），谱线尖锐且密集。
 
-## 结果文件里，000层是高空，100层是近地面。不信你就看看，高空谱线很密集，低空稀疏。
+  - 第 100 层：近地面（气压高），受压力加宽影响，谱线宽且稀疏。
+
+---
+
+## 🛠 Requirements | 环境依赖
+```text
+See environment.yml for details. Key dependencies include torch, numpy, h5py, and netCDF4.
+请参考 environment.yml。核心依赖包括 torch, numpy, h5py 和 netCDF4。
+```
