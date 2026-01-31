@@ -324,7 +324,21 @@ def create_non_uniform_grid(nu0, wing_cm, total_points, concentration_factor):
     return nu0 + wing_cm * x_non_uniform
 
 
-def pack_layers_into_batch(layer_indices, all_layers_lines_params, DEVICE):
+def pack_layers_into_batch(
+    layer_indices,
+    all_layers_lines_params,
+    DEVICE,
+    gamma_l_threshold=None,  # 新增：洛伦兹半高半宽阈值
+    use_high_gamma=True      # 新增：True表示使用>=阈值的谱线(HP)，False表示使用<阈值的谱线(LP)
+):
+    """
+    将多层的谱线参数打包成batch用于GPU推理
+
+    新增功能：支持根据gamma_l阈值过滤谱线
+    - 如果gamma_l_threshold不为None，则根据use_high_gamma选择性打包谱线
+    - use_high_gamma=True: 只打包gamma_l >= threshold的谱线（用于HP模型）
+    - use_high_gamma=False: 只打包gamma_l < threshold的谱线（用于LP模型）
+    """
     valid_indices = [
         i for i in layer_indices if len(all_layers_lines_params[i]["gamma_d"]) > 0
     ]
@@ -335,23 +349,66 @@ def pack_layers_into_batch(layer_indices, all_layers_lines_params, DEVICE):
             0
         ] * (len(layer_indices) + 1)
 
-    all_gamma_d = np.concatenate(
-        [all_layers_lines_params[i]["gamma_d"] for i in layer_indices]
-    )
-    all_gamma_l = np.concatenate(
-        [all_layers_lines_params[i]["gamma_l"] for i in layer_indices]
-    )
-    all_S = np.concatenate([all_layers_lines_params[i]["S"] for i in layer_indices])
-    all_nu0 = np.concatenate([all_layers_lines_params[i]["nu0"] for i in layer_indices])
-    all_delta_0 = np.concatenate(
-        [all_layers_lines_params[i]["delta_0"] for i in layer_indices]
-    )
-
+    # 收集数据时应用gamma_l过滤
+    all_gamma_d_list = []
+    all_gamma_l_list = []
+    all_S_list = []
+    all_nu0_list = []
+    all_delta_0_list = []
     layer_boundaries = [0]
+
     for i in layer_indices:
+        params = all_layers_lines_params[i]
+
+        # 如果指定了gamma_l阈值，进行过滤
+        if gamma_l_threshold is not None:
+            gamma_l_arr = params["gamma_l"]
+            if use_high_gamma:
+                # 选择gamma_l >= threshold的谱线（高压/宽谱线）
+                mask = gamma_l_arr >= gamma_l_threshold
+            else:
+                # 选择gamma_l < threshold的谱线（低压/窄谱线）
+                mask = gamma_l_arr < gamma_l_threshold
+
+            # 应用mask过滤所有参数
+            filtered_gamma_d = params["gamma_d"][mask]
+            filtered_gamma_l = params["gamma_l"][mask]
+            filtered_S = params["S"][mask]
+            filtered_nu0 = params["nu0"][mask]
+            filtered_delta_0 = params["delta_0"][mask]
+        else:
+            # 如果没有指定阈值，使用所有谱线（保持原有行为）
+            filtered_gamma_d = params["gamma_d"]
+            filtered_gamma_l = params["gamma_l"]
+            filtered_S = params["S"]
+            filtered_nu0 = params["nu0"]
+            filtered_delta_0 = params["delta_0"]
+
+        # 添加到列表
+        all_gamma_d_list.append(filtered_gamma_d)
+        all_gamma_l_list.append(filtered_gamma_l)
+        all_S_list.append(filtered_S)
+        all_nu0_list.append(filtered_nu0)
+        all_delta_0_list.append(filtered_delta_0)
+
+        # 更新边界
         layer_boundaries.append(
-            layer_boundaries[-1] + len(all_layers_lines_params[i]["gamma_d"])
+            layer_boundaries[-1] + len(filtered_gamma_d)
         )
+
+    # 合并所有层的数据
+    all_gamma_d = np.concatenate(all_gamma_d_list) if all_gamma_d_list else np.array([])
+    all_gamma_l = np.concatenate(all_gamma_l_list) if all_gamma_l_list else np.array([])
+    all_S = np.concatenate(all_S_list) if all_S_list else np.array([])
+    all_nu0 = np.concatenate(all_nu0_list) if all_nu0_list else np.array([])
+    all_delta_0 = np.concatenate(all_delta_0_list) if all_delta_0_list else np.array([])
+
+    # 如果过滤后没有数据，返回空结果
+    if len(all_gamma_d) == 0:
+        empty = torch.empty(0, dtype=torch.float32, device=DEVICE)
+        return {k: empty for k in ["gamma_d", "gamma_l", "S", "nu0", "delta_0"]}, [
+            0
+        ] * (len(layer_indices) + 1)
 
     batch_tensors = {
         "gamma_d": torch.from_numpy(all_gamma_d).to(DEVICE),
@@ -365,10 +422,20 @@ def pack_layers_into_batch(layer_indices, all_layers_lines_params, DEVICE):
 
 
 def process_mega_batch_gpu(
-    layer_indices, all_layers_lines_params, model, base_grid_gpu, DEVICE
+    layer_indices,
+    all_layers_lines_params,
+    model,
+    base_grid_gpu,
+    DEVICE,
+    gamma_l_threshold=None,  # 新增：洛伦兹半高半宽阈值
+    use_high_gamma=True      # 新增：选择高/低gamma_l的谱线
 ):
     batch_tensors, layer_boundaries = pack_layers_into_batch(
-        layer_indices, all_layers_lines_params, DEVICE
+        layer_indices,
+        all_layers_lines_params,
+        DEVICE,
+        gamma_l_threshold=gamma_l_threshold,
+        use_high_gamma=use_high_gamma
     )
 
     if batch_tensors["gamma_d"].numel() == 0:
@@ -629,240 +696,240 @@ def save_to_hdf5(
     print(f"NNLBL输出吸收截面光谱保存至{output_path}! 文件大小: {file_size:.2f} MB\n")
 
 
-# ============================================================================
-# 主程序
-# ============================================================================
+# # ============================================================================
+# # 主程序
+# # ============================================================================
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
 
-    import sys
+#     import sys
 
-    global_iso_ids = (None,)
-    # 命令行参数: --skip-hapi 跳过HAPI计算
-    SKIP_HAPI = "--skip-hapi" in sys.argv
+#     global_iso_ids = (None,)
+#     # 命令行参数: --skip-hapi 跳过HAPI计算
+#     SKIP_HAPI = "--skip-hapi" in sys.argv
 
-    print("=" * 80)
-    print("完整推理与数据保存")
-    if SKIP_HAPI:
-        print("⚠️  跳过HAPI计算模式")
-    print("=" * 80)
+#     print("=" * 80)
+#     print("完整推理与数据保存")
+#     if SKIP_HAPI:
+#         print("⚠️  跳过HAPI计算模式")
+#     print("=" * 80)
 
-    # 设置设备
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"使用设备: {DEVICE}")
+#     # 设置设备
+#     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     print(f"使用设备: {DEVICE}")
 
-    # 全局网格
-    global_wavenumber_grid = np.arange(GLOBAL_WN_MIN, GLOBAL_WN_MAX, GLOBAL_WN_STEP)
-    base_wavenumber_grid = create_non_uniform_grid(
-        1000.0, WING_SIZE, TOTAL_POINTS_FULL, CONCENTRATION_FACTOR
-    )
-    base_grid_gpu = torch.tensor(
-        base_wavenumber_grid, dtype=torch.float32, device=DEVICE
-    )
+#     # 全局网格
+#     global_wavenumber_grid = np.arange(GLOBAL_WN_MIN, GLOBAL_WN_MAX, GLOBAL_WN_STEP)
+#     base_wavenumber_grid = create_non_uniform_grid(
+#         1000.0, WING_SIZE, TOTAL_POINTS_FULL, CONCENTRATION_FACTOR
+#     )
+#     base_grid_gpu = torch.tensor(
+#         base_wavenumber_grid, dtype=torch.float32, device=DEVICE
+#     )
 
-    # 加载大气廓线
-    print("\n加载大气廓线...")
-    pressures_pa = np.loadtxt(PRESSURE_FILE) * 100
-    # representative_indices = np.loadtxt(INDEX_FILE, dtype=int)
-    # target_column = representative_indices[PROFILE_CHOICE] - 1
-    temperatures_k = np.loadtxt(TEMPERATURE_FILE)
-    CO2_concentration = np.loadtxt(CO2_concentration_pmv)
+#     # 加载大气廓线
+#     print("\n加载大气廓线...")
+#     pressures_pa = np.loadtxt(PRESSURE_FILE) * 100
+#     # representative_indices = np.loadtxt(INDEX_FILE, dtype=int)
+#     # target_column = representative_indices[PROFILE_CHOICE] - 1
+#     temperatures_k = np.loadtxt(TEMPERATURE_FILE)
+#     CO2_concentration = np.loadtxt(CO2_concentration_pmv)
 
-    # 1. 处理 Level (边界)：直接存储原始的 101 个值
-    atmospheric_levels = [
-        {"level": i, "pressure_pa": p, "temperature_k": t, "CO2_ppmv": c}
-        for i, (p, t, c) in enumerate(
-            zip(pressures_pa, temperatures_k, CO2_concentration)
-        )
-    ]
+#     # 1. 处理 Level (边界)：直接存储原始的 101 个值
+#     atmospheric_levels = [
+#         {"level": i, "pressure_pa": p, "temperature_k": t, "CO2_ppmv": c}
+#         for i, (p, t, c) in enumerate(
+#             zip(pressures_pa, temperatures_k, CO2_concentration)
+#         )
+#     ]
 
-    # 2. 处理 Layer (层)：计算相邻边界的平均值，共 100 层
-    # 遍历范围是 0 到 N-2 (即 len - 1)
-    atmospheric_profile = [
-        {
-            "layer": i,
-            "pressure_pa": (pressures_pa[i] + pressures_pa[i + 1]) / 2,  # 气压平均
-            "temperature_k": (temperatures_k[i] + temperatures_k[i + 1])
-            / 2,  # 温度平均
-            "CO2_ppmv": (CO2_concentration[i] + CO2_concentration[i + 1])
-            / 2,  # CO2浓度平均
-        }
-        for i in range(len(pressures_pa) - 1)
-    ]
+#     # 2. 处理 Layer (层)：计算相邻边界的平均值，共 100 层
+#     # 遍历范围是 0 到 N-2 (即 len - 1)
+#     atmospheric_profile = [
+#         {
+#             "layer": i,
+#             "pressure_pa": (pressures_pa[i] + pressures_pa[i + 1]) / 2,  # 气压平均
+#             "temperature_k": (temperatures_k[i] + temperatures_k[i + 1])
+#             / 2,  # 温度平均
+#             "CO2_ppmv": (CO2_concentration[i] + CO2_concentration[i + 1])
+#             / 2,  # CO2浓度平均
+#         }
+#         for i in range(len(pressures_pa) - 1)
+#     ]
 
-    # 打印结果验证
-    print(f"✅ 成功加载 {len(atmospheric_levels)} 个层边界 (Levels)")
-    print(f"✅ 成功计算 {len(atmospheric_profile)} 个层平均状态 (Layers)")
+#     # 打印结果验证
+#     print(f"✅ 成功加载 {len(atmospheric_levels)} 个层边界 (Levels)")
+#     print(f"✅ 成功计算 {len(atmospheric_profile)} 个层平均状态 (Layers)")
 
-    # 预计算HAPI参数
-    print("\n预计算HAPI物理参数...")
-    t_start = time.perf_counter()
-    all_layers_lines_params = Parallel(n_jobs=16)(
-        delayed(get_hapi_physical_params_new)(
-            MOLECULE,
-            GLOBAL_WN_MIN,
-            GLOBAL_WN_MAX,
-            layer["temperature_k"],
-            layer["pressure_pa"],
-            global_iso_ids=global_iso_ids,
-        )
-        for layer in tqdm(atmospheric_profile, desc="HAPI预计算")
-    )
-    print(f"✅ 预计算完成，耗时: {time.perf_counter() - t_start:.2f}秒")
+#     # 预计算HAPI参数
+#     print("\n预计算HAPI物理参数...")
+#     t_start = time.perf_counter()
+#     all_layers_lines_params = Parallel(n_jobs=16)(
+#         delayed(get_hapi_physical_params_new)(
+#             MOLECULE,
+#             GLOBAL_WN_MIN,
+#             GLOBAL_WN_MAX,
+#             layer["temperature_k"],
+#             layer["pressure_pa"],
+#             global_iso_ids=global_iso_ids,
+#         )
+#         for layer in tqdm(atmospheric_profile, desc="HAPI预计算")
+#     )
+#     print(f"✅ 预计算完成，耗时: {time.perf_counter() - t_start:.2f}秒")
 
-    # 加载模型
-    print("\n加载神经网络模型...")
-    statistics_pool = {
-        "lp": np.load(LP_STATS_PATH, allow_pickle=True).item(),
-        "hp": np.load(HP_STATS_PATH, allow_pickle=True).item(),
-    }
-    models = {
-        "lp": load_model(
-            LP_MODEL_PATH,
-            2,
-            [100, 500, 1000, 500],
-            TOTAL_POINTS_FULL,
-            DEVICE,
-            statistics_pool["lp"],
-        ),
-        "hp": load_model(
-            HP_MODEL_PATH,
-            2,
-            [100, 500, 1000, 500],
-            TOTAL_POINTS_FULL,
-            DEVICE,
-            statistics_pool["hp"],
-        ),
-    }
-    print("✅ 模型加载完成")
+#     # 加载模型
+#     print("\n加载神经网络模型...")
+#     statistics_pool = {
+#         "lp": np.load(LP_STATS_PATH, allow_pickle=True).item(),
+#         "hp": np.load(HP_STATS_PATH, allow_pickle=True).item(),
+#     }
+#     models = {
+#         "lp": load_model(
+#             LP_MODEL_PATH,
+#             2,
+#             [100, 500, 1000, 500],
+#             TOTAL_POINTS_FULL,
+#             DEVICE,
+#             statistics_pool["lp"],
+#         ),
+#         "hp": load_model(
+#             HP_MODEL_PATH,
+#             2,
+#             [100, 500, 1000, 500],
+#             TOTAL_POINTS_FULL,
+#             DEVICE,
+#             statistics_pool["hp"],
+#         ),
+#     }
+#     print("✅ 模型加载完成")
 
-    # GPU推理
-    print("\n开始GPU推理...")
-    t_infer_start = time.perf_counter()
+#     # GPU推理
+#     print("\n开始GPU推理...")
+#     t_infer_start = time.perf_counter()
 
-    # 分组
-    hp_layer_indices = [
-        i
-        for i, l in enumerate(atmospheric_profile)
-        if l["pressure_pa"] >= PRESSURE_THRESHOLD_PA
-    ]
-    lp_layer_indices = [
-        i
-        for i, l in enumerate(atmospheric_profile)
-        if l["pressure_pa"] < PRESSURE_THRESHOLD_PA
-    ]
+#     # 分组
+#     hp_layer_indices = [
+#         i
+#         for i, l in enumerate(atmospheric_profile)
+#         if l["pressure_pa"] >= PRESSURE_THRESHOLD_PA
+#     ]
+#     lp_layer_indices = [
+#         i
+#         for i, l in enumerate(atmospheric_profile)
+#         if l["pressure_pa"] < PRESSURE_THRESHOLD_PA
+#     ]
 
-    all_layer_absorptions = [None] * len(atmospheric_profile)
-    mega_batch_size = 2
+#     all_layer_absorptions = [None] * len(atmospheric_profile)
+#     mega_batch_size = 2
 
-    # 处理LP层
-    if lp_layer_indices:
-        print(f"处理低压层 ({len(lp_layer_indices)}层)...")
-        for batch_start in tqdm(range(0, len(lp_layer_indices), mega_batch_size)):
-            batch_end = min(batch_start + mega_batch_size, len(lp_layer_indices))
-            batch_indices = lp_layer_indices[batch_start:batch_end]
+#     # 处理LP层
+#     if lp_layer_indices:
+#         print(f"处理低压层 ({len(lp_layer_indices)}层)...")
+#         for batch_start in tqdm(range(0, len(lp_layer_indices), mega_batch_size)):
+#             batch_end = min(batch_start + mega_batch_size, len(lp_layer_indices))
+#             batch_indices = lp_layer_indices[batch_start:batch_end]
 
-            layer_gpu_results = process_mega_batch_gpu(
-                batch_indices,
-                all_layers_lines_params,
-                models["lp"],
-                base_grid_gpu,
-                DEVICE,
-            )
+#             layer_gpu_results = process_mega_batch_gpu(
+#                 batch_indices,
+#                 all_layers_lines_params,
+#                 models["lp"],
+#                 base_grid_gpu,
+#                 DEVICE,
+#             )
 
-            batch_absorptions = Parallel(n_jobs=-1, backend="threading")(
-                delayed(process_superposition_from_gpu)(
-                    p, w, global_wavenumber_grid, base_wavenumber_grid
-                )
-                for p, w in layer_gpu_results
-            )
+#             batch_absorptions = Parallel(n_jobs=-1, backend="threading")(
+#                 delayed(process_superposition_from_gpu)(
+#                     p, w, global_wavenumber_grid, base_wavenumber_grid
+#                 )
+#                 for p, w in layer_gpu_results
+#             )
 
-            for i, idx in enumerate(batch_indices):
-                all_layer_absorptions[idx] = batch_absorptions[i]
+#             for i, idx in enumerate(batch_indices):
+#                 all_layer_absorptions[idx] = batch_absorptions[i]
 
-    # 处理HP层
-    if hp_layer_indices:
-        print(f"处理高压层 ({len(hp_layer_indices)}层)...")
-        for batch_start in tqdm(range(0, len(hp_layer_indices), mega_batch_size)):
-            batch_end = min(batch_start + mega_batch_size, len(hp_layer_indices))
-            batch_indices = hp_layer_indices[batch_start:batch_end]
+#     # 处理HP层
+#     if hp_layer_indices:
+#         print(f"处理高压层 ({len(hp_layer_indices)}层)...")
+#         for batch_start in tqdm(range(0, len(hp_layer_indices), mega_batch_size)):
+#             batch_end = min(batch_start + mega_batch_size, len(hp_layer_indices))
+#             batch_indices = hp_layer_indices[batch_start:batch_end]
 
-            layer_gpu_results = process_mega_batch_gpu(
-                batch_indices,
-                all_layers_lines_params,
-                models["hp"],
-                base_grid_gpu,
-                DEVICE,
-            )
+#             layer_gpu_results = process_mega_batch_gpu(
+#                 batch_indices,
+#                 all_layers_lines_params,
+#                 models["hp"],
+#                 base_grid_gpu,
+#                 DEVICE,
+#             )
 
-            batch_absorptions = Parallel(n_jobs=-1, backend="threading")(
-                delayed(process_superposition_from_gpu)(
-                    p, w, global_wavenumber_grid, base_wavenumber_grid
-                )
-                for p, w in layer_gpu_results
-            )
+#             batch_absorptions = Parallel(n_jobs=-1, backend="threading")(
+#                 delayed(process_superposition_from_gpu)(
+#                     p, w, global_wavenumber_grid, base_wavenumber_grid
+#                 )
+#                 for p, w in layer_gpu_results
+#             )
 
-            for i, idx in enumerate(batch_indices):
-                all_layer_absorptions[idx] = batch_absorptions[i]
+#             for i, idx in enumerate(batch_indices):
+#                 all_layer_absorptions[idx] = batch_absorptions[i]
 
-    print(f"✅ GPU推理完成，耗时: {time.perf_counter() - t_infer_start:.2f}秒")
+#     print(f"✅ GPU推理完成，耗时: {time.perf_counter() - t_infer_start:.2f}秒")
 
-    # 计算HAPI基准（带缓存，可跳过）
-    if SKIP_HAPI:
-        print("\n⚠️  跳过HAPI计算")
-        hapi_results = None
-    else:
-        import pickle
-        import hashlib
+#     # 计算HAPI基准（带缓存，可跳过）
+#     if SKIP_HAPI:
+#         print("\n⚠️  跳过HAPI计算")
+#         hapi_results = None
+#     else:
+#         import pickle
+#         import hashlib
 
-        # 生成缓存文件名（基于配置参数）
-        cache_key = f"{MOLECULE}_{GLOBAL_WN_MIN}_{GLOBAL_WN_MAX}_{PRESSURE_FILE}_{TEMPERATURE_FILE}"
-        cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:16]
-        hapi_cache_path = f"cache/hapi_results_{cache_hash}.pkl"
-        os.makedirs("cache", exist_ok=True)
+#         # 生成缓存文件名（基于配置参数）
+#         cache_key = f"{MOLECULE}_{GLOBAL_WN_MIN}_{GLOBAL_WN_MAX}_{PRESSURE_FILE}_{TEMPERATURE_FILE}"
+#         cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:16]
+#         hapi_cache_path = f"cache/hapi_results_{cache_hash}.pkl"
+#         os.makedirs("cache", exist_ok=True)
 
-        # 尝试加载缓存
-        if os.path.exists(hapi_cache_path):
-            print(f"\n发现HAPI缓存: {hapi_cache_path}")
-            print("正在加载...")
-            t_load_start = time.perf_counter()
-            with open(hapi_cache_path, "rb") as f:
-                hapi_results = pickle.load(f)
-            print(
-                f"✅ HAPI缓存加载完成，耗时: {time.perf_counter() - t_load_start:.2f}秒"
-            )
-        else:
-            print("\n未找到HAPI缓存，开始计算...")
-            t_hapi_start = time.perf_counter()
-            hapi_results = Parallel(n_jobs=8)(
-                delayed(calculate_hapi_benchmark_new)(
-                    MOLECULE,
-                    global_wavenumber_grid,
-                    layer["temperature_k"],
-                    layer["pressure_pa"],
-                    GLOBAL_WN_MIN,
-                    GLOBAL_WN_MAX,
-                )
-                for layer in tqdm(atmospheric_profile, desc="HAPI计算")
-            )
-            print(f"✅ HAPI完成，耗时: {time.perf_counter() - t_hapi_start:.2f}秒")
+#         # 尝试加载缓存
+#         if os.path.exists(hapi_cache_path):
+#             print(f"\n发现HAPI缓存: {hapi_cache_path}")
+#             print("正在加载...")
+#             t_load_start = time.perf_counter()
+#             with open(hapi_cache_path, "rb") as f:
+#                 hapi_results = pickle.load(f)
+#             print(
+#                 f"✅ HAPI缓存加载完成，耗时: {time.perf_counter() - t_load_start:.2f}秒"
+#             )
+#         else:
+#             print("\n未找到HAPI缓存，开始计算...")
+#             t_hapi_start = time.perf_counter()
+#             hapi_results = Parallel(n_jobs=8)(
+#                 delayed(calculate_hapi_benchmark_new)(
+#                     MOLECULE,
+#                     global_wavenumber_grid,
+#                     layer["temperature_k"],
+#                     layer["pressure_pa"],
+#                     GLOBAL_WN_MIN,
+#                     GLOBAL_WN_MAX,
+#                 )
+#                 for layer in tqdm(atmospheric_profile, desc="HAPI计算")
+#             )
+#             print(f"✅ HAPI完成，耗时: {time.perf_counter() - t_hapi_start:.2f}秒")
 
-            # 保存缓存
-            print(f"正在保存HAPI缓存...")
-            with open(hapi_cache_path, "wb") as f:
-                pickle.dump(hapi_results, f, protocol=pickle.HIGHEST_PROTOCOL)
-            print(f"✅ HAPI缓存已保存: {hapi_cache_path}")
+#             # 保存缓存
+#             print(f"正在保存HAPI缓存...")
+#             with open(hapi_cache_path, "wb") as f:
+#                 pickle.dump(hapi_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+#             print(f"✅ HAPI缓存已保存: {hapi_cache_path}")
 
-    # 保存数据
-    save_to_hdf5(
-        OUTPUT_H5,
-        atmospheric_profile,
-        all_layer_absorptions,
-        hapi_results,
-        global_wavenumber_grid,
-        MOLECULE,
-    )
+#     # 保存数据
+#     save_to_hdf5(
+#         OUTPUT_H5,
+#         atmospheric_profile,
+#         all_layer_absorptions,
+#         hapi_results,
+#         global_wavenumber_grid,
+#         MOLECULE,
+#     )
 
-    print("=" * 80)
-    print("全部完成！")
-    print("=" * 80)
+#     print("=" * 80)
+#     print("全部完成！")
+#     print("=" * 80)

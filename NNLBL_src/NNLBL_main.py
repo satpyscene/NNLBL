@@ -314,6 +314,7 @@ def NNLBL_API(
     path_config,
     enable_continuum=True,
     skip_hapi=False,
+    gamma_l_threshold=None,  # 新增：洛伦兹半高半宽阈值（cm⁻¹）
 ):
     """
     NNLBL 的高级封装接口。负责数据加载、路径推导，最后调用核心算法。
@@ -375,6 +376,7 @@ def NNLBL_API(
         skip_hapi=skip_hapi,
         global_iso_ids=target_iso_list,
         enable_continuum=enable_continuum,
+        gamma_l_threshold=gamma_l_threshold,  # 新增：传递gamma_l阈值
     )
 
 
@@ -399,7 +401,8 @@ def NNLBL_main(
     LP_STATS_PATH="NNmodel&stats/voigt_stats_lp_Full-nonuniform-n0_1000_noshift.npy",
     skip_hapi=False,
     global_iso_ids=None,
-    enable_continuum=True,  # <--- [修改 1] 新增开关，默认开启
+    enable_continuum=True,
+    gamma_l_threshold=None,  # 新增：洛伦兹半高半宽阈值（用于替代气压阈值）
 ):
     print("!" * 80)
     print(
@@ -407,10 +410,26 @@ def NNLBL_main(
     )
     print("!" * 80)
 
-    PRESSURE_THRESHOLD_PA = 2200.0  # 高低压分界线
+    # 模型分界参数
+    # 新版：优先使用 gamma_l_threshold（洛伦兹半高半宽阈值）
+    # 如果未指定 gamma_l_threshold，则回退到旧的气压阈值模式
+    PRESSURE_THRESHOLD_PA = 2200.0  # 气压分界线（旧版，仅在 gamma_l_threshold=None 时使用）
+
     WING_SIZE = 25.0
     TOTAL_POINTS_FULL = 5001
     CONCENTRATION_FACTOR = 6.0
+
+    # 判断使用哪种划分模式
+    if gamma_l_threshold is not None:
+        print(f">> 模型划分模式: 洛伦兹半高半宽阈值 = {gamma_l_threshold:.6f} cm⁻¹")
+        print("   - γ_L ≥ 阈值 → HP模型（高压/宽谱线）")
+        print("   - γ_L < 阈值 → LP模型（低压/窄谱线）")
+        use_gamma_l_mode = True
+    else:
+        print(f">> 模型划分模式: 气压阈值 = {PRESSURE_THRESHOLD_PA} Pa（传统模式）")
+        print("   - P ≥ 阈值 → HP模型")
+        print("   - P < 阈值 → LP模型")
+        use_gamma_l_mode = False
 
     print("=" * 80)
     print(f"启动推理流程 | 输出目标: {output_path}")
@@ -523,77 +542,145 @@ def NNLBL_main(
     print("两个神经网络模型已加载至目标设备")
 
     # ---------------------------------------------------
-    # E. GPU 推理 (保持原有逻辑)
+    # E. GPU 推理
     # ---------------------------------------------------
-    # print("\n开始GPU推理...")
     t_infer_start = time.perf_counter()
-
-    # 根据气压阈值分组
-    hp_layer_indices = [
-        i
-        for i, l in enumerate(atmospheric_profile)
-        if l["pressure_pa"] >= PRESSURE_THRESHOLD_PA
-    ]
-    lp_layer_indices = [
-        i
-        for i, l in enumerate(atmospheric_profile)
-        if l["pressure_pa"] < PRESSURE_THRESHOLD_PA
-    ]
-
     all_layer_absorptions = [None] * len(atmospheric_profile)
     mega_batch_size = 2
 
-    # --- 处理低压层 (LP) ---
-    if lp_layer_indices:
-        print(f"处理低压层 ({len(lp_layer_indices)}层)...")
-        for batch_start in tqdm(range(0, len(lp_layer_indices), mega_batch_size)):
-            batch_end = min(batch_start + mega_batch_size, len(lp_layer_indices))
-            batch_indices = lp_layer_indices[batch_start:batch_end]
+    if use_gamma_l_mode:
+        # ========================================
+        # 新模式：基于洛伦兹半高半宽 (gamma_l) 划分
+        # ========================================
+        print("\n开始GPU推理（基于γ_L阈值的混合模型模式）...")
+        print(f"每层将根据谱线的γ_L分别使用HP和LP模型")
 
-            layer_gpu_results = process_mega_batch_gpu(
-                batch_indices,
-                all_layers_lines_params,
-                models["lp"],
-                base_grid_gpu,
-                DEVICE,
-            )
+        all_layer_indices = list(range(len(atmospheric_profile)))
 
-            # 后处理：插值回全局网格
-            batch_absorptions = Parallel(n_jobs=-1, backend="threading")(
-                delayed(process_superposition_from_gpu)(
-                    p, w, global_wavenumber_grid, base_wavenumber_grid
+        # 遍历所有层，每层分别处理HP和LP谱线
+        for batch_start in tqdm(range(0, len(all_layer_indices), mega_batch_size), desc="处理各层"):
+            batch_end = min(batch_start + mega_batch_size, len(all_layer_indices))
+            batch_indices = all_layer_indices[batch_start:batch_end]
+
+            # 对当前batch中的每一层，分别处理HP和LP部分
+            for idx in batch_indices:
+                # --- 处理该层的HP谱线（gamma_l >= threshold）---
+                layer_gpu_results_hp = process_mega_batch_gpu(
+                    [idx],  # 单层
+                    all_layers_lines_params,
+                    models["hp"],
+                    base_grid_gpu,
+                    DEVICE,
+                    gamma_l_threshold=gamma_l_threshold,
+                    use_high_gamma=True  # 使用HP模型处理高gamma_l谱线
                 )
-                for p, w in layer_gpu_results
-            )
 
-            for i, idx in enumerate(batch_indices):
-                all_layer_absorptions[idx] = batch_absorptions[i]
-
-    # --- 处理高压层 (HP) ---
-    if hp_layer_indices:
-        print(f"处理高压层 ({len(hp_layer_indices)}层)...")
-        for batch_start in tqdm(range(0, len(hp_layer_indices), mega_batch_size)):
-            batch_end = min(batch_start + mega_batch_size, len(hp_layer_indices))
-            batch_indices = hp_layer_indices[batch_start:batch_end]
-
-            layer_gpu_results = process_mega_batch_gpu(
-                batch_indices,
-                all_layers_lines_params,
-                models["hp"],
-                base_grid_gpu,
-                DEVICE,
-            )
-
-            # 后处理：插值回全局网格
-            batch_absorptions = Parallel(n_jobs=-1, backend="threading")(
-                delayed(process_superposition_from_gpu)(
-                    p, w, global_wavenumber_grid, base_wavenumber_grid
+                # --- 处理该层的LP谱线（gamma_l < threshold）---
+                layer_gpu_results_lp = process_mega_batch_gpu(
+                    [idx],  # 单层
+                    all_layers_lines_params,
+                    models["lp"],
+                    base_grid_gpu,
+                    DEVICE,
+                    gamma_l_threshold=gamma_l_threshold,
+                    use_high_gamma=False  # 使用LP模型处理低gamma_l谱线
                 )
-                for p, w in layer_gpu_results
-            )
 
-            for i, idx in enumerate(batch_indices):
-                all_layer_absorptions[idx] = batch_absorptions[i]
+                # --- 插值并合并HP和LP的结果 ---
+                # HP部分
+                profiles_hp, wn_grids_hp = layer_gpu_results_hp[0]
+                if profiles_hp is not None:
+                    absorption_hp = process_superposition_from_gpu(
+                        profiles_hp, wn_grids_hp, global_wavenumber_grid, base_wavenumber_grid
+                    )
+                else:
+                    absorption_hp = np.zeros_like(global_wavenumber_grid)
+
+                # LP部分
+                profiles_lp, wn_grids_lp = layer_gpu_results_lp[0]
+                if profiles_lp is not None:
+                    absorption_lp = process_superposition_from_gpu(
+                        profiles_lp, wn_grids_lp, global_wavenumber_grid, base_wavenumber_grid
+                    )
+                else:
+                    absorption_lp = np.zeros_like(global_wavenumber_grid)
+
+                # 合并（简单相加，因为谱线不重叠）
+                all_layer_absorptions[idx] = absorption_hp + absorption_lp
+
+    else:
+        # ========================================
+        # 旧模式：基于气压阈值划分（向后兼容）
+        # ========================================
+        print("\n开始GPU推理（传统气压阈值模式）...")
+
+        # 根据气压阈值分组
+        hp_layer_indices = [
+            i
+            for i, l in enumerate(atmospheric_profile)
+            if l["pressure_pa"] >= PRESSURE_THRESHOLD_PA
+        ]
+        lp_layer_indices = [
+            i
+            for i, l in enumerate(atmospheric_profile)
+            if l["pressure_pa"] < PRESSURE_THRESHOLD_PA
+        ]
+
+        # --- 处理低压层 (LP) ---
+        if lp_layer_indices:
+            print(f"处理低压层 ({len(lp_layer_indices)}层)...")
+            for batch_start in tqdm(range(0, len(lp_layer_indices), mega_batch_size)):
+                batch_end = min(batch_start + mega_batch_size, len(lp_layer_indices))
+                batch_indices = lp_layer_indices[batch_start:batch_end]
+
+                layer_gpu_results = process_mega_batch_gpu(
+                    batch_indices,
+                    all_layers_lines_params,
+                    models["lp"],
+                    base_grid_gpu,
+                    DEVICE,
+                    gamma_l_threshold=None,  # 旧模式不使用gamma_l过滤
+                    use_high_gamma=True
+                )
+
+                # 后处理：插值回全局网格
+                batch_absorptions = Parallel(n_jobs=-1, backend="threading")(
+                    delayed(process_superposition_from_gpu)(
+                        p, w, global_wavenumber_grid, base_wavenumber_grid
+                    )
+                    for p, w in layer_gpu_results
+                )
+
+                for i, idx in enumerate(batch_indices):
+                    all_layer_absorptions[idx] = batch_absorptions[i]
+
+        # --- 处理高压层 (HP) ---
+        if hp_layer_indices:
+            print(f"处理高压层 ({len(hp_layer_indices)}层)...")
+            for batch_start in tqdm(range(0, len(hp_layer_indices), mega_batch_size)):
+                batch_end = min(batch_start + mega_batch_size, len(hp_layer_indices))
+                batch_indices = hp_layer_indices[batch_start:batch_end]
+
+                layer_gpu_results = process_mega_batch_gpu(
+                    batch_indices,
+                    all_layers_lines_params,
+                    models["hp"],
+                    base_grid_gpu,
+                    DEVICE,
+                    gamma_l_threshold=None,  # 旧模式不使用gamma_l过滤
+                    use_high_gamma=True
+                )
+
+                # 后处理：插值回全局网格
+                batch_absorptions = Parallel(n_jobs=-1, backend="threading")(
+                    delayed(process_superposition_from_gpu)(
+                        p, w, global_wavenumber_grid, base_wavenumber_grid
+                    )
+                    for p, w in layer_gpu_results
+                )
+
+                for i, idx in enumerate(batch_indices):
+                    all_layer_absorptions[idx] = batch_absorptions[i]
 
     print(
         f"NNLBL吸收截面光谱计算结束，耗时: {time.perf_counter() - t_infer_start:.2f}秒"
